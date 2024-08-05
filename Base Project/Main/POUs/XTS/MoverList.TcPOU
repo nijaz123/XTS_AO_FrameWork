@@ -1,0 +1,980 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="MoverList" Id="{6a6492c3-5dac-4c49-8708-8eab34cf4a1d}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK MoverList EXTENDS Objective IMPLEMENTS iMoverList
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Methods" Id="{f0610894-1931-4d0e-a817-1d1b4c8212b1}" />
+    <Folder Name="Properties" Id="{3fdda14a-1516-48f6-a734-917962304085}" />
+    <Method Name="ActivateAllTrack" Id="{ad8953ff-aa85-09f3-0f73-09c72fab1fb2}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD ActivateAllTrack : BOOL
+VAR_INPUT
+	Track	: REFERENCE TO Track;
+END_VAR
+VAR
+    i : ULINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// this method is not chainable
+// monitor .IsAllTrackReady before calling additional commands on this list
+
+// For every valid mover in the list, pass it a ActivateTrack command
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.ActivateTrack(Track);
+    END_IF
+
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="ApplyAllParameterSet" Id="{ee27996d-bc19-0617-3aa0-2b2a5832f4d1}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD ApplyAllParameterSet : iMoverList
+VAR_INPUT
+	ParameterSet		: MotionParameters_typ;
+END_VAR
+
+VAR
+	i: ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+	
+	IF internalTrackedMovers[i] <> 0 THEN
+		internalTrackedMovers[i]^.MotionParameters		:= ParameterSet;
+	END_IF
+	
+END_FOR
+
+ApplyAllParameterSet		:= THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Contains" Id="{49bffcb6-3630-0c15-279c-3e0d2426245a}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD Contains : BOOL
+VAR_INPUT
+	
+	Mover		: REFERENCE TO Mover;
+
+END_VAR
+
+VAR
+	i: UDINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check if the input Mover is contained within the existing list
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1]) DO
+	IF internalTrackedMovers[i] <> 0 AND internalTrackedMovers[i] = ADR( Mover ) THEN
+		Contains	:= TRUE;
+	END_IF
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="DestinationStation" Id="{c0547a1c-2297-0060-3112-c0f3bffc12c0}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD DestinationStation : iMoverList
+VAR_INPUT
+	Destination	: REFERENCE TO Station;
+END_VAR
+VAR
+	i : ulint;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// filters this mover list for movers that have the stated destination station
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+	// test for valid mover
+    IF internalTrackedMovers[i] <> 0 THEN
+		// test for track ready
+		IF internalTrackedMovers[i]^.IsTrackReady THEN
+			// unregister this mover if the track id, movetype or destination position do not match
+			IF internalTrackedMovers[i]^.CurrentDestinationTrack <> Destination.TrackId OR
+			 internalTrackedMovers[i]^.CurrentMoveType <> MOVETYPE_STATION OR
+			 internalTrackedMovers[i]^.CurrentDestinationPosition <> Destination.Position THEN
+				// unregister this mover, the manual way
+				internalTrackedMovers[i]  := 0; // remove the pointer
+                internalTrackedMoverCount := internalTrackedMoverCount - 1;
+			 END_IF;
+		ELSE
+			// track was not ready, unregister this mover
+			// the manual way
+			internalTrackedMovers[i]  := 0; // remove the pointer
+			internalTrackedMoverCount := internalTrackedMoverCount - 1;
+		END_IF;
+	END_IF
+	
+END_FOR;
+
+// return this list for chaining
+DestinationStation := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="DisableAll" Id="{34930db0-7d57-0ea7-09de-0bf399bd6e52}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD DisableAll : iMoverList
+VAR
+	i		: ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// For every valid mover in the list, Enable it
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+	
+	IF internalTrackedMovers[i] <> 0 THEN
+		internalTrackedMovers[i]^.Disable();
+	END_IF
+
+END_FOR
+
+DisableAll	:= THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="EnableAll" Id="{99b09009-74d0-0637-0d16-bcb874d15a8e}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD EnableAll : iMoverList
+VAR
+	i		: ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// For every valid mover in the list, Enable it
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+	
+	IF internalTrackedMovers[i] <> 0 THEN
+		internalTrackedMovers[i]^.Enable();
+	END_IF
+
+END_FOR
+
+EnableAll	:= THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="GetMoverByLocation" Id="{5ac43cd5-f85a-06c2-1468-37f2b5bf2a62}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD GetMoverByLocation : REFERENCE TO Mover
+VAR_INPUT
+	Index			: USINT;				// 0 is find the first closest mover, 1 is find the second closest mover, 2 is find the third, etc. etc. etc.
+	Position		: LREAL;				// fixed track position from which to search for movers by proximity
+	Direction		: Tc2_MC2.MC_Direction;	// Positive = find the most positive mover whose position is less than the Input. Negative = find the most negative mover whose position is greater than the Input.		
+END_VAR
+
+VAR
+	sortState			: USINT;
+
+	SortedBuffer		: ARRAY[0..GVL.NUM_MOVERS - 1] OF POINTER TO Mover;	// Initially empty array of movers, sorted in order
+	HoldingBuffer		: ARRAY[0..GVL.NUM_MOVERS - 1] OF POINTER TO Mover;	// Holding buffer for sorting operations
+	
+	place				: UDINT;	// placement index
+	level				: UDINT;	// level tracker
+	element				: UDINT;	// index tracker
+	
+	allsorted			: BOOL;		// status bit, array has been successfully sorted
+	elementsorted		: BOOL;		// status bit, element has been successfully sorted
+	
+	size				: UDINT;	// size of the sortation merge elements at this level
+	low					: UDINT;	// starting point for index i within this element
+	middle				: UDINT;	// starting point for index j within this element
+	high				: UDINT;	// end of the sortation merge element at this level, element
+	
+	i					: UDINT;		// index variable within the merge element
+	j					: UDINT;		// index variable within the merge element	
+	
+	directionalDistance_i		: LREAL;
+	directionalDistance_j		: LREAL;
+	
+	cycles				: UDINT;
+	
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// Method is implemented using a Mergesort, for improved performance on systems with high mover counts.
+
+memcpy(ADR(SortedBuffer),ADR(internalTrackedMovers),SIZEOF(internalTrackedMovers));
+
+WHILE allsorted = FALSE DO
+	
+	cycles		:= cycles + 1;		// simple counter, for evaluating performance
+
+	CASE sortState OF
+		0: // ------------------------- Calculate sort parameters for the current merge element		
+		
+			size			:= LREAL_TO_UDINT(EXPT(2,level+1));
+			low				:= element * size;
+			high			:= low + size - 1;
+			middle			:= low + LREAL_TO_UDINT(FLOOR(size / 2));
+			
+			i				:= low;
+			j				:= middle;
+			
+			sortState		:= 1;
+		
+		1: // ------------------------- Check if the level is completely sorted/merged
+		
+			IF element = 0 AND EXPT(2,level) > SIZEOF(SortedBuffer) / SIZEOF(SortedBuffer[0]) THEN
+				// the last level has been merged, everything is sorted
+				allsorted		:= TRUE;
+			ELSIF low > SIZEOF(SortedBuffer) / SIZEOF(SortedBuffer[0]) - 1 THEN
+				// the elements in this level have been merged, increment to the next
+				memset(ADR(HoldingBuffer),0,SIZEOF(HoldingBuffer));
+				level			:= level + 1;
+				element			:= 0;
+				place			:= 0;
+				sortState		:= 0;
+			ELSE
+				// this level is still being merged, continue the process
+				sortState		:= 2;
+			END_IF
+			
+		2: // ------------------------- Check if the elements at the indices are sortable or if we're beyond the array
+		
+			IF ( i >= middle OR i > SIZEOF(SortedBuffer)/SIZEOF(SortedBuffer[0])-1 ) AND
+				( j > high OR j > SIZEOF(SortedBuffer)/SIZEOF(SortedBuffer[0])-1 ) THEN
+				// i and j have both reached the end of the merge element
+				// copy the results from the holding buffer into sorted
+				// and increment the element to the next for merging
+				memcpy(ADR(SortedBuffer[low]),ADR(HoldingBuffer[low]),size*SIZEOF(SortedBuffer[0]));
+				element			:= element + 1;
+				sortState		:= 0;
+			ELSE
+				// i and j are both sortable. move on to direct comparisons
+				sortState		:= 3;				
+			END_IF
+			
+		3: // ------------------------- Merge elements at indices i & j
+		
+			// Calculate directional distances at i & j
+			IF Direction = MC_Positive_Direction THEN
+				// Calculate for i
+				IF SortedBuffer[i] <> 0 AND_THEN SortedBuffer[i]^.TrackInfo.TrackPosition <= Position THEN
+					directionalDistance_i		:= Position - SortedBuffer[i]^.TrackInfo.TrackPosition;
+				ELSIF SortedBuffer[i] <> 0 AND_THEN SortedBuffer[i]^.TrackInfo.TrackPosition > Position THEN
+					directionalDistance_i		:= Position + ( GVL.TRACK_LENGTH - SortedBuffer[i]^.TrackInfo.TrackPosition );
+				END_IF;	
+				// Calculate for j
+				IF SortedBuffer[j] <> 0 AND_THEN SortedBuffer[j]^.TrackInfo.TrackPosition <= Position THEN
+					directionalDistance_j		:= Position - SortedBuffer[j]^.TrackInfo.TrackPosition;
+				ELSIF SortedBuffer[j] <> 0 AND_THEN SortedBuffer[j]^.TrackInfo.TrackPosition > Position THEN
+					directionalDistance_j		:= Position + ( GVL.TRACK_LENGTH - SortedBuffer[j]^.TrackInfo.TrackPosition );					 
+				END_IF
+				
+			ELSIF Direction = MC_Negative_Direction THEN
+				
+				// Calculate for i
+				IF SortedBuffer[i] <> 0 AND_THEN SortedBuffer[i]^.TrackInfo.TrackPosition <= Position THEN
+					directionalDistance_i		:= SortedBuffer[i]^.TrackInfo.TrackPosition + ( GVL.TRACK_LENGTH - Position );
+				ELSIF SortedBuffer[i] <> 0 AND_THEN SortedBuffer[i]^.TrackInfo.TrackPosition > Position THEN
+					directionalDistance_i		:= SortedBuffer[i]^.TrackInfo.TrackPosition - Position;
+				END_IF
+				// Calculate for j
+				IF SortedBuffer[j] <> 0 AND_THEN SortedBuffer[j]^.TrackInfo.TrackPosition <= Position THEN
+					directionalDistance_j		:= SortedBuffer[j]^.TrackInfo.TrackPosition + ( GVL.TRACK_LENGTH - Position );
+				ELSIF SortedBuffer[j] <> 0 AND_THEN SortedBuffer[j]^.TrackInfo.TrackPosition > Position THEN
+					directionalDistance_j		:= SortedBuffer[j]^.TrackInfo.TrackPosition - Position;
+				END_IF
+				
+			ELSE
+				// closest in any direction, typically for linear, non-modulo tracks
+				IF SortedBuffer[i] <> 0 THEN
+					directionalDistance_i		:= ABS(SortedBuffer[i]^.TrackInfo.TrackPosition - Position);
+				END_IF
+				IF SortedBuffer[j] <> 0 THEN
+					directionalDistance_j		:= ABS(SortedBuffer[j]^.TrackInfo.TrackPosition - Position);
+				END_IF
+				
+			END_IF
+		
+			// If j alone is beyond a sortable range, grab i
+			IF j > high OR j > SIZEOF(SortedBuffer)/SIZEOF(SortedBuffer[0])-1 THEN
+				HoldingBuffer[place]		:= SortedBuffer[i];
+				place						:= place + 1;
+				i							:= i + 1;
+			// If i is beyond a sortable range, grab j
+			ELSIF i >= middle THEN
+				HoldingBuffer[place]		:= SortedBuffer[j];
+				place						:= place + 1;
+				j							:= j + 1;
+			ELSIF SortedBuffer[i] = 0 THEN
+				HoldingBuffer[place]		:= SortedBuffer[j];
+				place						:= place + 1;
+				j							:= j + 1;
+			ELSIF SortedBuffer[j] = 0 THEN
+				HoldingBuffer[place]		:= SortedBuffer[i];
+				place						:= place + 1;
+				i							:= i + 1;
+			ELSIF directionalDistance_i <= directionalDistance_j THEN
+				HoldingBuffer[place]		:= SortedBuffer[i];
+				place						:= place + 1;
+				i							:= i + 1;
+			ELSIF directionalDistance_j < directionalDistance_i THEN
+				HoldingBuffer[place]		:= SortedBuffer[j];
+				place						:= place + 1;
+				j							:= j + 1; 
+			END_IF
+			
+			sortState		:= 2;
+	END_CASE;	
+END_WHILE
+
+IF Index < 1 OR Index > THIS^.TrackedMoverCount THEN
+	GetMoverByLocation REF= 0;
+ELSE
+	GetMoverByLocation REF= SortedBuffer[Index]^;
+END_IF
+
+IF __ISVALIDREF(GetMoverByLocation) = FALSE THEN
+	ErrorMover.SourceInstancePath		:= THIS^.InstancePath;
+	GetMoverByLocation					REF= ErrorMover;
+END_IF
+
+
+
+
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="HaltAll" Id="{da08056b-7ab2-0f88-0878-dde248efd6e3}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD HaltAll : iMoverList
+VAR
+	i		: ULINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// For every valid mover in the list, Halt it
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+	
+	IF internalTrackedMovers[i] <> 0 THEN
+		internalTrackedMovers[i]^.Halt();
+	END_IF
+
+END_FOR
+
+HaltAll	:= THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="IsAllMoversDisabled" Id="{62b7d526-7474-0452-005a-29acf2e3f507}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY IsAllMoversDisabled : bool]]></Declaration>
+      <Get Name="Get" Id="{65b9f9db-b175-0367-29fb-c0545e966bd7}">
+        <Declaration><![CDATA[VAR
+	i: ULINT;
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsAllMoversDisabled		:= TRUE;		// ...default
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+
+	IF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.Ready = TRUE THEN
+		IsAllMoversDisabled		:= FALSE;
+	END_IF;
+
+
+END_FOR]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="IsAllMoversHalted" Id="{7eaef20f-f1ea-0872-0da2-c36e439864d5}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY IsAllMoversHalted : BOOL]]></Declaration>
+      <Get Name="Get" Id="{d65b9e73-d62f-07d0-2566-ad06acb540ed}">
+        <Declaration><![CDATA[VAR
+	i: ULINT;
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsAllMoversHalted		:= TRUE;		// ...default
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+	// check for valid mover
+	IF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.AxisReference.Status.Moving = TRUE THEN
+		IsAllMoversHalted		:= FALSE;
+	END_IF;
+
+END_FOR]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="IsAllMoversReady" Id="{60630f08-9378-0450-0bc7-1b90b2e15524}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY IsAllMoversReady : BOOL]]></Declaration>
+      <Get Name="Get" Id="{bc6cb727-5d1a-0db0-2b04-cbe3e5287984}">
+        <Declaration><![CDATA[VAR
+	i: ULINT;
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[
+IsAllMoversReady		:= TRUE;		// ...default
+
+FOR i := 1 TO SIZEOF( internalTrackedMovers ) / SIZEOF( internalTrackedMovers[1] ) DO
+
+	IF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.Ready = FALSE THEN
+		IsAllMoversReady		:= FALSE;
+	END_IF;
+
+END_FOR]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="IsAllTrackReady" Id="{6e2cc0c2-f637-0149-0661-22b5c671a702}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY IsAllTrackReady : BOOL]]></Declaration>
+      <Get Name="Get" Id="{cf4fcf50-2d73-046b-2dbd-7c13f3f0f631}">
+        <Declaration><![CDATA[VAR
+	i : ULINT;
+	size : ULINT;
+	allReady : BOOL;
+	zeroCount : ULINT;
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// For every valid mover in the list, sum up IsTrackReady
+// intentionally returns false if no movers are found
+// this is to support the typical use case when MoverList.ActivateAllTrack and .IsAllTrackReady are called back-to-back
+// to peroform a track change
+// this ensures that during the ~20ms track change in software when no movers may be present on the track, this response will not inadvertantly advance code
+// if zero movers is a common situation an OR condition of "MoverList.TrackedMoverCount = 0" can be added to the statement calling this
+allReady := TRUE;
+size := SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]);
+zeroCount := 0;
+
+FOR i := 1 TO size DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        allReady := allReady AND internalTrackedMovers[i]^.IsTrackReady;
+	ELSE
+		zeroCount := zeroCount + 1;
+    END_IF
+
+END_FOR
+
+// check for no movers
+IF zeroCount = (size) THEN
+	allReady := FALSE;
+END_IF
+
+IsAllTrackReady := allReady; // return result]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="LogicalComplement" Id="{d6bb64e7-1c08-0ac2-2a32-42be336ae034}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD LogicalComplement : MoverList
+VAR_INPUT
+END_VAR
+
+VAR
+	i: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+FOR i := 1 TO GVL.NUM_MOVERS DO
+	
+	IF NOT THIS^.Contains( Mediator.MoverArray[i]^ ) THEN
+		LogicalComplement.RegisterMover( Mediator.MoverArray[i]^ );
+	END_IF
+
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="LogicalDifference" Id="{a0c51d7c-09ca-0254-378e-53c1775ec0b5}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD LogicalDifference : MoverList
+VAR_INPUT
+	
+	MoverList		: MoverList;
+
+END_VAR
+VAR
+	i				: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+
+FOR i := 1 TO GVL.NUM_MOVERS DO
+	
+	IF THIS^.Contains( Mediator.MoverArray[i]^ ) AND NOT MoverList.Contains( Mediator.MoverArray[i]^ ) THEN
+		LogicalDifference.RegisterMover( Mediator.MoverArray[i]^ );
+	END_IF
+
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="LogicalIntersect" Id="{83ddeada-4967-0249-0f08-a02d5e1843f1}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD LogicalIntersect : MoverList
+VAR_INPUT
+	
+	MoverList		: MoverList;
+
+END_VAR
+
+VAR
+	i				: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+FOR i := 1 TO GVL.NUM_MOVERS DO
+	
+	IF MoverList.Contains( Mediator.MoverArray[i]^ ) AND THIS^.Contains( Mediator.MoverArray[i]^ ) THEN
+		LogicalIntersect.RegisterMover( Mediator.MoverArray[i]^ );	
+	END_IF
+	
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="LogicalUnion" Id="{328a0d90-4052-09a0-1fd6-2c3bd426e573}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD LogicalUnion : MoverList
+VAR_INPUT
+	
+	MoverList		: MoverList;
+
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+LogicalUnion.RegisterMoverList( MoverList );
+LogicalUnion.RegisterMoverList( THIS^ );
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="MoveAllToPosition" Id="{bd912cae-8475-45f4-9366-6d4e3f45dbfd}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD MoveAllToPosition : iMoverList
+VAR_INPUT
+
+    DestinationPosition : LREAL; // position on track for all shuttles to move towards	
+
+END_VAR
+
+VAR
+    i : ulint;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, pass it a MoveToPosition command
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.MoveToPosition(DestinationPosition);
+    END_IF
+
+END_FOR
+
+MoveAllToPosition := THIS^; // return this, to allow method chaining]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="MoveAllToStation" Id="{7e8649c5-afae-438c-9d7c-0849d9778d85}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD MoveAllToStation : iMoverList
+VAR_INPUT
+
+    DestinationStation : REFERENCE TO Station;
+
+END_VAR
+
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, pass it a MoveToStation command
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.MoveToStation(DestinationStation);
+    END_IF
+
+END_FOR
+
+MoveAllToStation := THIS^; // allows method chaining]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="MoveAllVelocity" Id="{374fc66e-e454-42d2-84eb-da107ea5cc5b}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD MoveAllVelocity : iMoverList
+VAR_INPUT
+
+    Velocity : LREAL;
+
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, pass it a MoveVelocity command
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.MoveVelocity(Velocity);
+    END_IF
+
+END_FOR
+
+MoveAllVelocity := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllAcceleration" Id="{e13ce26b-c052-44c4-b781-edc2323e6bd8}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllAcceleration : iMoverList
+VAR_INPUT
+
+    Acceleration : LREAL;
+
+END_VAR
+
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, set the Acceleration values
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetAcceleration(Acceleration);
+    END_IF
+
+END_FOR
+
+SetAllAcceleration := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllDeceleration" Id="{b4a74589-da0f-40fe-9d74-9df176d68d9e}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllDeceleration : iMoverList
+VAR_INPUT
+
+    Deceleration : LREAL;
+
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, set the Deceleration values
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetDeceleration(Deceleration);
+    END_IF
+
+END_FOR
+
+SetAllDeceleration := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllDirection" Id="{61dc841d-816d-4126-817b-0edc70c354b4}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllDirection : iMoverList
+VAR_INPUT
+
+    Direction : Tc3_Mc3Definitions.MC_DIRECTION;
+
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, update the internal Direction parameter
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetDirection(Direction);
+    END_IF
+
+END_FOR
+
+SetAllDirection := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllGap" Id="{1311da71-cec2-0375-2ed8-ab2381f7cc99}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllGap : iMoverList
+VAR_INPUT
+    Gap : LREAL;
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, update the internal Gap Parameter
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetGap(Gap);
+    END_IF
+
+END_FOR
+
+SetAllGap := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllGapMode" Id="{eb4b4f5b-2a13-0c63-3742-71822424864a}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllGapMode : iMoverList
+VAR_INPUT
+    Mode	: MC_GAP_CONTROL_MODE;
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, update the internal GapMode Parameter
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetGapMode(Mode);
+    END_IF
+
+END_FOR
+
+SetAllGapMode := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllJerk" Id="{713a2faa-4d72-4826-b835-2931c44827b9}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllJerk : iMoverList
+VAR_INPUT
+
+    Jerk : LREAL;
+
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, update the internal Jerk Parameter
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetJerk(Jerk);
+    END_IF
+
+END_FOR
+
+SetAllJerk := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetAllVelocity" Id="{cee9569c-3982-4955-90f1-8e5baf09c135}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD SetAllVelocity : iMoverList
+VAR_INPUT
+
+    Velocity : LREAL;
+
+END_VAR
+VAR
+    i : ULINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// For every valid mover in the list, set the Velocity values
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    IF internalTrackedMovers[i] <> 0 THEN
+        internalTrackedMovers[i]^.SetVelocity(Velocity);
+    END_IF
+
+END_FOR
+
+SetAllVelocity := THIS^;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="UnregisterAll" Id="{9f7a3d8e-3975-4fa4-8579-c54f77146104}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD UnregisterAll : BOOL
+VAR_INPUT
+END_VAR
+VAR
+    i : ulint;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+    IF internalTrackedMovers[i] <> 0 THEN
+        THIS^.UnregisterMover(internalTrackedMovers[i]^);
+    END_IF
+END_FOR
+
+//UnregisterAll		:= THIS^;	// dunno how you would method chain from this call, but there ya go
+
+// Nope!]]></ST>
+      </Implementation>
+    </Method>
+    <LineIds Name="MoverList">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.ActivateAllTrack">
+      <LineId Id="24" Count="0" />
+      <LineId Id="22" Count="1" />
+      <LineId Id="6" Count="7" />
+    </LineIds>
+    <LineIds Name="MoverList.ApplyAllParameterSet">
+      <LineId Id="7" Count="0" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="8" Count="0" />
+      <LineId Id="14" Count="2" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="9" Count="0" />
+      <LineId Id="18" Count="0" />
+      <LineId Id="17" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.Contains">
+      <LineId Id="3" Count="6" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.DestinationStation">
+      <LineId Id="9" Count="25" />
+      <LineId Id="6" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.DisableAll">
+      <LineId Id="9" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="11" Count="0" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="18" Count="1" />
+      <LineId Id="15" Count="0" />
+      <LineId Id="14" Count="0" />
+      <LineId Id="21" Count="0" />
+      <LineId Id="20" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.EnableAll">
+      <LineId Id="9" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="11" Count="0" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="18" Count="1" />
+      <LineId Id="15" Count="0" />
+      <LineId Id="14" Count="0" />
+      <LineId Id="21" Count="0" />
+      <LineId Id="20" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.GetMoverByLocation">
+      <LineId Id="485" Count="142" />
+      <LineId Id="14" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.HaltAll">
+      <LineId Id="6" Count="11" />
+      <LineId Id="5" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.IsAllMoversDisabled.Get">
+      <LineId Id="5" Count="2" />
+      <LineId Id="27" Count="0" />
+      <LineId Id="30" Count="2" />
+      <LineId Id="22" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.IsAllMoversHalted.Get">
+      <LineId Id="5" Count="2" />
+      <LineId Id="23" Count="0" />
+      <LineId Id="9" Count="1" />
+      <LineId Id="22" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.IsAllMoversReady.Get">
+      <LineId Id="5" Count="2" />
+      <LineId Id="2" Count="0" />
+      <LineId Id="14" Count="0" />
+      <LineId Id="8" Count="0" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="11" Count="0" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.IsAllTrackReady.Get">
+      <LineId Id="5" Count="0" />
+      <LineId Id="24" Count="4" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="21" Count="0" />
+      <LineId Id="30" Count="0" />
+      <LineId Id="22" Count="0" />
+      <LineId Id="6" Count="3" />
+      <LineId Id="31" Count="1" />
+      <LineId Id="10" Count="2" />
+      <LineId Id="34" Count="0" />
+      <LineId Id="33" Count="0" />
+      <LineId Id="35" Count="2" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.LogicalComplement">
+      <LineId Id="6" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="8" Count="0" />
+      <LineId Id="14" Count="2" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.LogicalDifference">
+      <LineId Id="12" Count="2" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="15" Count="0" />
+      <LineId Id="18" Count="0" />
+      <LineId Id="20" Count="1" />
+      <LineId Id="17" Count="0" />
+      <LineId Id="16" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.LogicalIntersect">
+      <LineId Id="9" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="18" Count="0" />
+      <LineId Id="22" Count="0" />
+      <LineId Id="20" Count="0" />
+      <LineId Id="11" Count="1" />
+    </LineIds>
+    <LineIds Name="MoverList.LogicalUnion">
+      <LineId Id="9" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="11" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.MoveAllToPosition">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.MoveAllToStation">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.MoveAllVelocity">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllAcceleration">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllDeceleration">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllDirection">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllGap">
+      <LineId Id="13" Count="8" />
+      <LineId Id="5" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllGapMode">
+      <LineId Id="13" Count="8" />
+      <LineId Id="5" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllJerk">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.SetAllVelocity">
+      <LineId Id="3" Count="8" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="MoverList.UnregisterAll">
+      <LineId Id="3" Count="7" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

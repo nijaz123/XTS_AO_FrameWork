@@ -1,0 +1,844 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="Mediator" Id="{164d51b4-07ec-0e46-0eb0-392af39d7d3a}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK Mediator
+VAR_INPUT
+
+	MoverArray				: ARRAY [1..GVL.NUM_MOVERS] OF POINTER TO Mover;
+	
+	MoverListArray			: ARRAY [0..GVL.NUM_MOVERLISTS-1] OF POINTER TO MoverList;
+	PositionTriggerArray	: ARRAY [0..GVL.NUM_POSITIONTRIGGERS-1] OF POINTER TO PositionTrigger;
+	StationArray			: ARRAY [0..GVL.NUM_STATIONS-1] OF POINTER TO Station;
+	ZoneArray				: ARRAY [0..GVL.NUM_ZONES-1] OF POINTER TO Zone;
+	TrackArray				: ARRAY [0..GVL.NUM_TRACKS] OF POINTER TO Track;	// track 0 is a special absolute case, this makes the array 1 larger than normal	
+
+	GROUP_REF				: AXES_GROUP_REF;
+	
+END_VAR
+VAR_OUTPUT
+	Error			: BOOL;			// error is currently active
+	ErrorID			: UDINT;		// errorID of the active error
+	ErrorOrigin		: STRING;		// error source, in case of errored internal function block
+END_VAR
+VAR
+	{attribute 'instance-path'}
+	{attribute 'noinit'}
+	{attribute 'hide'}
+	InstancePath		: STRING;	// instance naming, for diagnostics purposes
+
+	internalMoverList				: MoverList;
+	internalM1DetectFlag			: BOOL;
+	internalM1DetectState			: INT;
+	internalEnableGroupFlag			: BOOL;
+	internalEnableGroupState		: INT;
+	internalEnabled					: BOOL;
+	
+	// ========= XTS Utility Diagnostics =========
+	fbXtsEnvironment				: FB_TcIoXtsEnvironment;
+	fbXtsEnvironmentVisu			: FB_XtsEnvironmentVisu;
+	stXtsEnvironmentConfiguration	: ST_XtsEnvironmentConfiguration;	
+	nEnvironmentState				: INT;
+	internalInfoServerOTCID			: UDINT;
+
+	internalEnvironment				: I_TcIoXtsEnvironment;
+	internalXPU						: I_TcIoXtsProcessingUnit;
+	internalInfoServer				: I_TcIoXtsInfoServer;
+	
+	// ========= internal function blocks =========
+	fbGroupStatus			: MC_GroupReadStatus;
+	fbGroupEnable			: MC_GroupEnable;
+	fbGroupReset			: MC_GroupReset;
+	fbGroupStop				: MC_GroupStop;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Methods" Id="{0d177045-c92a-0627-14e7-41e4c9da72c3}" />
+    <Folder Name="Properties" Id="{d9d81742-b9bd-0437-3780-4a446062d311}" />
+    <Method Name="AddMover" Id="{3437c27c-dd7b-0ac3-07a2-d432fc68235a}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddMover : BOOL
+VAR_INPUT
+	
+	Mover		: REFERENCE TO Mover;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+
+IF __ISVALIDREF( Mover ) THEN
+	
+	Mover.Mediator			REF= THIS^;
+
+	duplicateFound			:= FALSE;
+	
+	FOR i := 1 TO SIZEOF( MoverArray ) / SIZEOF( MoverArray[1] ) DO
+		IF MoverArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR(Mover) = MoverArray[i] THEN
+				duplicateFound		:= TRUE;	// this mover is already mediated
+			END_IF
+		ELSE
+			emptyIDX	:= i;	// confirmed oopen array element
+		END_IF	
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		
+		THIS^.MoverArray[emptyIDX]		:= ADR( Mover );	// new mover into empty array element
+
+		// Automatically register the mover with any Position Triggers
+		FOR i := 0 TO SIZEOF( PositionTriggerArray ) / SIZEOF( PositionTriggerArray[0] ) - 1 DO
+			IF PositionTriggerArray[i] <> 0 THEN
+				PositionTriggerArray[i]^.RegisterMover( Mover );
+			END_IF			
+		END_FOR
+		
+		// Automatically register the mover with any Zones
+		FOR i := 0 TO SIZEOF( ZoneArray ) / SIZEOF( ZoneArray[0] ) - 1 DO
+			IF ZoneArray[i] <> 0 THEN
+				ZoneArray[i]^.RegisterMover( Mover );
+			END_IF
+		END_FOR
+		
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddMoverList" Id="{fa372345-a99c-01d2-2d94-cc2fd6bab53d}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddMoverList : BOOL
+VAR_INPUT
+	
+	MoverList		: REFERENCE TO MoverList;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+IF __ISVALIDREF( MoverList ) THEN
+	
+	MoverList.Mediator			REF= THIS^;
+	
+	duplicateFound				:= FALSE;
+	
+	FOR i := 0 TO SIZEOF( MoverListArray ) / SIZEOF( MoverListArray[0] ) - 1 DO
+		IF MoverListArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR( MoverList ) = MoverListArray[i] THEN
+				duplicateFound		:= TRUE;		// this moverlist is already mediated
+			END_IF
+		ELSE
+			emptyIDX		:= i;		// confirmed open array element
+		END_IF
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		THIS^.MoverListArray[emptyIDX]		:= ADR( MoverList );
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddPositionTrigger" Id="{37697d0e-c381-0846-3d01-3d7f2d276ad1}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddPositionTrigger : BOOL
+VAR_INPUT
+	
+	PositionTrigger		: REFERENCE TO PositionTrigger;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+IF __ISVALIDREF( PositionTrigger ) THEN
+	
+	PositionTrigger.Mediator		REF= THIS^;
+	
+	duplicateFound					:= FALSE;
+	
+	FOR i := 0 TO SIZEOF( PositionTriggerArray ) / SIZEOF( PositionTriggerArray[0] ) - 1 DO
+		IF PositionTriggerArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR( PositionTrigger ) = PositionTriggerArray[i] THEN
+				duplicateFound		:= TRUE;		// this moverlist is already mediated
+			END_IF
+		ELSE
+			emptyIDX		:= i;		// confirmed open array element
+		END_IF
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		THIS^.PositionTriggerArray[emptyIDX]		:= ADR( PositionTrigger );
+		
+		// Automatically register all existing movers with the new position trigger
+		FOR i := 1 TO SIZEOF( MoverArray ) / SIZEOF( MoverArray[1] ) DO
+			IF MoverArray[i] <> 0 THEN
+				THIS^.PositionTriggerArray[emptyIDX]^.RegisterMover( MoverArray[i]^ );
+			END_IF
+		END_FOR		
+		
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddStation" Id="{158bfd8c-35c0-05f6-1398-0d0a087d099a}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddStation : BOOL
+VAR_INPUT
+	
+	Station		: REFERENCE TO Station;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+IF __ISVALIDREF( Station ) THEN
+	
+	Station.Mediator	REF= THIS^;
+	
+	duplicateFound		:= FALSE;
+	
+	FOR i := 0 TO SIZEOF( StationArray ) / SIZEOF( StationArray[0] ) - 1 DO
+		IF StationArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR( Station ) = StationArray[i] THEN
+				duplicateFound		:= TRUE;		// this moverlist is already mediated
+			END_IF
+		ELSE
+			emptyIDX		:= i;		// confirmed open array element
+		END_IF
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		THIS^.StationArray[emptyIDX]		:= ADR( Station );
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddTrack" Id="{1f5fda23-0b4f-059d-05b7-42b4aba73321}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddTrack : BOOL
+VAR_INPUT
+	
+	Track		: REFERENCE TO Track;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+IF __ISVALIDREF( Track ) THEN
+	
+	Track.Mediator		REF= THIS^;
+	
+	duplicateFound		:= FALSE;
+	
+	FOR i := 0 TO SIZEOF( TrackArray ) / SIZEOF( TrackArray[0] ) - 1 DO
+		IF TrackArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR( Track ) = TrackArray[i] THEN
+				duplicateFound		:= TRUE;		// this moverlist is already mediated
+			END_IF
+		ELSE
+			emptyIDX		:= i;		// confirmed open array element
+		END_IF
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		THIS^.TrackArray[emptyIDX]		:= ADR( Track );
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddZone" Id="{b7275e17-ff08-069c-32b8-5e7a13dacb64}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD AddZone : BOOL
+VAR_INPUT
+	
+	Zone		: REFERENCE TO Zone;
+
+END_VAR
+
+VAR
+	duplicateFound		: BOOL;
+	i					: UDINT;
+	emptyIDX			: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+// Check for duplicates
+IF __ISVALIDREF( Zone ) THEN
+	
+	Zone.Mediator		REF= THIS^;
+	
+	duplicateFound		:= FALSE;
+	
+	FOR i := 0 TO SIZEOF( ZoneArray ) / SIZEOF( ZoneArray[0] ) - 1 DO
+		IF ZoneArray[i] <> 0 THEN		// verify the element is clear to prevent overwrites
+			IF ADR( Zone ) = ZoneArray[i] THEN
+				duplicateFound		:= TRUE;		// this moverlist is already mediated
+			END_IF
+		ELSE
+			emptyIDX		:= i;		// confirmed open array element
+		END_IF
+	END_FOR
+	
+	IF duplicateFound = FALSE THEN
+		THIS^.ZoneArray[emptyIDX]		:= ADR( Zone );
+		
+		// Automatically register all existing movers with the new zone
+		FOR i := 1 TO SIZEOF( MoverArray ) / SIZEOF( MoverArray[1] ) DO
+			IF MoverArray[i] <> 0 THEN
+				THIS^.ZoneArray[emptyIDX]^.RegisterMover( MoverArray[i]^ );
+			END_IF
+		END_FOR
+		
+	END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="CompleteMoverList" Id="{41f8f92e-6d81-02a1-048b-3da9baf27ff9}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY CompleteMoverList : iMoverList]]></Declaration>
+      <Get Name="Get" Id="{0ba48769-41e2-05d1-1ed6-465e4a354ad7}">
+        <Declaration><![CDATA[VAR
+	i: UDINT;
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalMoverList.UnregisterAll();
+
+FOR i := 1 TO SIZEOF( MoverArray ) / SIZEOF( MoverArray[1] ) DO
+	IF MoverArray[i] <> 0 THEN
+		internalMoverList.RegisterMover( MoverArray[i]^ );
+	END_IF
+END_FOR
+
+CompleteMoverList	:= internalMoverList;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="Cyclic" Id="{f2264867-ad86-0c96-3c42-ade0fe3bf9e2}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD Cyclic : BOOL
+VAR_INPUT
+END_VAR
+
+VAR
+	eMoverIdDetectionMode : MoverIdDetectionMode;
+END_VAR
+
+VAR_INST
+	MsgCreate		: FB_TcMessage;
+	
+	// station info state machine support
+	nInfoServerState : INT;
+	PartStartEnd : ARRAY [1..GVL.PART_ARRAY_SIZE] OF ARRAY [0..1] OF LREAL;
+	nPartsInTrack1	: UDINT;
+	TrackPartInfo	: ARRAY[1..TcIoXtsEnvironmentParameterList.MaxPartsPerTrack] OF ST_PartInfoItems;
+	PartInfo 		: St_PartInfoItems;
+	nInfoServerStations		: UDINT;
+	nUsableStations			: UDINT;
+	StationTcIo		: I_TcIoXtsInfoServerInfoStation;
+	nStationPartNum	: UDINT;
+	xtsStationPointer : POINTER TO Station;
+	xtsStation		: Station;
+	PartObjectIds	: ARRAY [1..TcIoXtsEnvironmentParameterList.MaxXtsPartsPerXpu] OF OTCID;
+	StopPositions	: ARRAY [1..TcIoXtsEnvironmentParameterList.MaxXtsStopPositionsPerStation] OF LREAL := [0.0];
+	i				: UDINT;
+	j				: UDINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// this method contains multiple state machines denoted by the headers below
+
+// Handle all project cyclic calls
+
+FOR i := 1 TO GVL.NUM_MOVERS DO
+	IF MoverArray[i] <> 0 THEN
+		MoverArray[i]^.Cyclic( GROUP_REF );			// could make this ca group addition clener
+		MoverArray[i]^.AxisReference.ReadStatus();
+	END_IF
+END_FOR
+
+FOR i := 0 TO GVL.NUM_STATIONS - 1 DO
+	IF StationArray[i] <> 0 THEN
+		StationArray[i]^.Cyclic();
+	END_IF
+END_FOR
+
+FOR i := 0 TO GVL.NUM_POSITIONTRIGGERS - 1 DO
+	IF PositionTriggerArray[i] <> 0 THEN
+		PositionTriggerArray[i]^.Cyclic();
+	END_IF
+END_FOR
+
+FOR i := 0 TO GVL.NUM_TRACKS - 1 DO
+	IF TrackArray[i] <> 0 THEN
+		TrackArray[i]^.Cyclic();
+	END_IF
+END_FOR
+
+// *************************************************************************
+// environment state machine
+// *************************************************************************
+
+CASE nEnvironmentState OF
+	0:	// ----------------------------------------- Enable Init Items
+	
+		// Enable init Info Server if needed
+		stXtsEnvironmentConfiguration.bEnableInitInfoServer		:= TRUE;
+		
+		// Enable init CA Group if needed
+		stXtsEnvironmentConfiguration.bEnableInitCaGroup		:= TRUE;
+		
+		// Set configuration of XtsUtility init
+		fbXtsEnvironment.P_XtsEnvironmentConfiguration			:= stXtsEnvironmentConfiguration;
+		
+		// Next step
+		nEnvironmentState	:= 1;
+		
+	1:	// ------------------------------------------ Init Environment
+		
+		// Start init
+		IF fbXtsEnvironment.Init(TRUE) THEN
+			// stop init
+			fbXtsEnvironment.Init(FALSE);
+			
+			// next step
+			nEnvironmentState	:= 2;
+		END_IF
+		
+	2:	// ------------------------------------------ Check for success
+	
+		// Check IsInitialized property
+		IF fbXtsEnvironment.P_IsInitialized THEN
+			// assign to vars
+			internalEnvironment := fbXtsEnvironment;
+			internalXPU			:= fbXtsEnvironment.XpuTcIo(1);
+			internalInfoServer	:= fbXtsEnvironment.InfoServerTcIo(1);
+			// next step
+			nEnvironmentState	:= 3;
+		END_IF
+
+	3:	// ------------------------------------------ Get OTCID
+	
+		IF internalEnvironment.GetInfoServerOids(TRUE) THEN
+			internalEnvironment.GetInfoServerOids(FALSE);
+			internalInfoServerOTCID := internalEnvironment.P_InfoServerOids[1];
+			nEnvironmentState := 4;
+		END_IF;
+		
+	4:	// ------------------------------------------- Init info server
+		
+		// Start init
+		IF internalInfoServer.Init(TRUE, internalInfoServerOTCID) THEN
+			// stop init
+			internalInfoServer.Init(FALSE, internalInfoServerOTCID);
+			
+			// next step
+			nEnvironmentState	:= 5;
+		END_IF
+	5:	// ------------------------------------------ Check for success
+	
+		// Check IsInitialized property
+		IF internalInfoServer.P_IsInitialized THEN
+			// next step
+			nEnvironmentState	:= 6;
+		END_IF
+		
+	6:	// ------------------------------------------- Init Visu
+	
+		fbXtsEnvironmentVisu( ipTcIoXtsEnvironment := fbXtsEnvironment );
+		
+		// next step
+		nEnvironmentState	:= 7;
+		
+	7:	// ------------------------------------------- Init done
+
+		fbXtsEnvironmentVisu.Cycle();
+		
+END_CASE
+
+// *************************************************************************
+// mover 1 detection state machine
+// *************************************************************************
+
+// monitor for the group reset flag and act on it
+CASE internalM1DetectState OF 
+	0:	// wait for flag and envrionment
+		IF internalM1DetectFlag AND EnvironmentIsReady AND_THEN NOT THIS^.Mover1DetectionComplete THEN
+ 			internalM1DetectState := 10;
+		END_IF;
+		
+	10:	// check for mover 1 mode
+		eMoverIdDetectionMode := XPU.GetMoverIdDetectionMode();
+		IF (eMoverIdDetectionMode = MoverIdDetectionMode.Mover1) THEN
+			// mover 1 detection sequence
+			internalM1DetectState := 100;
+		ELSE
+			// no detection required
+			internalM1DetectState := 200;
+		END_IF
+		
+	100: // check if mover 1 id is avtive
+		IF NOT (XPU.GetIsMoverIdDetectionActive() OR XPU.GetIsMoverIdDetectionValid()) THEN
+			// start the detection
+			XPU.TriggerMoverIdDetection();
+		END_IF;
+		internalM1DetectState := 110;
+		
+	110: // wait for group detection results
+		IF XPU.GetHasMoverIdDetectionError() THEN
+			// error state
+			internalM1DetectState := 900;
+		ELSIF XPU.GetIsMoverIdDetectionValid() AND NOT XPU.GetIsMoverIdDetectionActive() THEN
+			// detection complete
+			internalM1DetectState := 200;
+		END_IF;
+				
+	
+	200: // set flags and clean up
+		// flag is read directly from XPU in Mover1DetectionComplete property
+		internalM1DetectState := 0;
+		
+END_CASE
+
+// reset flag always
+internalM1DetectFlag := FALSE;
+
+// *************************************************************************
+// group enable state machine
+// *************************************************************************
+
+// get group status for property
+fbGroupStatus.Enable := TRUE;
+fbGroupStatus( AxesGroup := GROUP_REF );
+
+CASE internalEnableGroupState OF
+	0:	// wait for flag 
+		IF internalEnableGroupFlag AND NOT internalEnabled THEN
+			internalEnableGroupState := 10;
+			Error := FALSE;
+		END_IF;
+
+	10: // ------------------------------------------------------- check the status of the group
+	
+		IF fbGroupStatus.Valid AND fbGroupStatus.GroupErrorStop THEN
+			fbGroupReset.Execute		:= TRUE;
+		ELSIF fbGroupStatus.Valid AND fbGroupStatus.GroupDisabled THEN
+			fbGroupReset.Execute		:= FALSE;
+			internalEnableGroupState	:= 20;
+		ELSIF fbGroupStatus.Valid AND ( fbGroupStatus.GroupStandby OR fbGroupStatus.GroupMoving ) THEN
+			fbGroupReset.Execute		:= FALSE;
+			internalEnableGroupState	:= 100;
+		END_IF
+		
+		IF fbGroupStatus.Error THEN
+			ErrorID						:= fbGroupStatus.ErrorId;
+			ErrorOrigin					:= CONCAT( InstancePath, '.fbGroupStatus' );
+			MsgCreate.CreateEx( TC_EVENTS.XtsBaseEventClass.fbGroupStatus,0 );
+			MsgCreate.ipArguments.Clear().AddString(THIS^.InstancePath).AddUDINT(THIS^.ErrorID);
+			internalEnableGroupState	:= 900;
+		ELSIF fbGroupReset.Error THEN
+			ErrorID						:= fbGroupReset.ErrorId;
+			ErrorOrigin					:= CONCAT( InstancePath, '.fbGroupReset' );
+			MsgCreate.CreateEx( TC_EVENTS.XtsBaseEventClass.fbGroupReset,0 );
+			MsgCreate.ipArguments.Clear().AddString(THIS^.InstancePath).AddUDINT(THIS^.ErrorID);
+			internalEnableGroupState	:= 900;
+		END_IF
+		
+	
+	20: // ------------------------------------------------------- enable the group
+		
+		fbGroupEnable.Execute			:= TRUE;
+		
+		IF fbGroupEnable.Done THEN
+			fbGroupEnable.Execute		:= FALSE;
+			internalEnableGroupState	:= 100;
+		ELSIF fbGroupEnable.Error THEN
+			ErrorID						:= fbGroupEnable.ErrorId;
+			ErrorOrigin					:= CONCAT( InstancePath, '.fbGroupEnable' );
+			MsgCreate.CreateEx( TC_EVENTS.XtsBaseEventClass.fbGroupEnable,0 );
+			MsgCreate.ipArguments.Clear().AddString(THIS^.InstancePath).AddUDINT(THIS^.ErrorID);
+			MsgCreate.Send(0);
+			internalEnableGroupState	:= 900;
+		END_IF
+		
+	100: // clean up flags and rewind
+		internalEnabled := TRUE;
+		internalEnableGroupState := 0;
+		
+	900: // error
+		Error := TRUE;
+		internalEnabled := FALSE;
+		
+		
+END_CASE
+
+// catch error flag and reset custom status bit
+IF (fbGroupStatus.GroupErrorStop) THEN
+	Error := TRUE;
+	internalEnabled := FALSE;
+END_IF
+
+// cyclic calls
+fbGroupEnable( AxesGroup := GROUP_REF );
+fbGroupReset( AxesGroup := GROUP_REF );
+fbGroupStop( AxesGroup := GROUP_REF );
+
+// always clear the triggering flag
+internalEnableGroupFlag := FALSE;
+
+// *************************************************************************
+// station info state machine
+// *************************************************************************
+
+// populate TcCom XTS station objects with positions and part numbers from code for easier visibility in simulation
+
+// check for environment
+IF THIS^.InfoServerIsReady AND internalEnabled AND GVL.AUTO_POPULATE_STATIONS THEN
+	
+	CASE nInfoServerState OF
+		
+	// get number of parts via track 1 and store start/end positions in 
+		0:
+			// check for defined track in first position
+			IF (internalXPU.P_TrackCount >= 1) THEN
+				nInfoServerState := 10;
+			END_IF
+			
+		10:
+			// get info about array of parts
+			nPartsInTrack1 := internalXPU.TrackTcIo(1).GetPartCount();
+			nInfoServerState := 20;
+			
+		20:
+			// get info for each part start and end position (or max size of array)
+			TrackPartInfo := internalXPU.TrackTcIo(1).GetPartInfoItems();
+			FOR i := 1 TO MIN(nPartsInTrack1, GVL.PART_ARRAY_SIZE) DO
+				PartInfo := TrackPartInfo[i];
+				PartStartEnd[i][0] := PartInfo.fOffset;
+				PartStartEnd[i][1] := PartInfo.fLength + PartInfo.fOffset;
+			END_FOR
+			nInfoServerState := 30;
+			
+		30:
+			// get number of stations
+			nInfoServerStations := internalInfoServer.GetInfoStationCount() ;
+			nInfoServerStations := internalINfoServer.P_InfoStationCount;
+			nInfoServerState := 40;
+			
+		40:
+			// calculate minimum number of stations that can be set up
+			nUsableStations := MIN(nInfoServerStations, GVL.NUM_STATIONS);
+			FOR i := 1 TO nUsableStations DO
+				// get XTS_Base Station pointer (stored in reverse order in StationArray)
+				xtsStationPointer := StationArray[GVL.NUM_STATIONS - i];
+				// test for valid pointer (station has been through the Mediator.AddStation method)
+				IF (xtsStationPointer <> 0) THEN
+					// dereference the pointer
+					xtsStation := xtsStationPointer^;
+					// make sure the position is not zero (hides stations that probably aren't used)
+						IF (xtsStation.Position <> 0.0) THEN
+						// calculate part number
+						nStationPartNum := 0;
+						FOR j := 1 TO nPartsInTrack1 DO
+							IF (PartStartEnd[j][0] <= xtsStation.Position AND xtsStation.Position < PartStartEnd[j][1]) THEN
+								nStationPartNum := j;
+							END_IF
+						END_FOR
+						// test for found part number
+						IF (nStationPartNum > 0) THEN
+						// get station
+							StationTcIO := internalInfoServer.InfoStationTcIo(UDINT_TO_UINT(i));
+							// test for valid station
+							IF (stationTcIO <> 0) THEN
+								// try not to overwrite data that may have been entered in the configurator by testing for a start position of 0 (from the configurator), or 10 and 200 (defaults from adding object by hand)
+								IF (StationTcIO.GetStartPositionOnPart() = 0.0 OR (StationTcIO.GetStartPositionOnPart() = 10.0 AND StationTcIO.GetEndPositionOnPart() = 200.0)) THEN
+									// assign data
+									StationTcIO.SetStationId(i);
+									PartObjectIds[1] := TrackPartInfo[nStationPartNum].nObjectId;
+									stationTcIO.SetPartObjectIds(PartObjectIds);
+									StationTcIO.SetStartPositionOnPart(xtsSTation.Position - PartStartEnd[nStationPartNum][0]);
+									StationTcIO.SetEndPositionOnPart(xtsSTation.Position - PartStartEnd[nStationPartNum][0]);
+									StationTcIo.SetStopPositions(StopPositions);
+									StationTcIo.SetStationColor(16#FFEF0000);	// Beckhoff red
+								END_IF;
+							END_IF;
+						END_IF;
+					END_IF;
+				END_IF;
+			END_FOR
+			// transition to non-existent state. This routine only runs one time at the first enable signal.
+			nInfoServerState := 50;
+		
+			
+	END_CASE
+
+
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="DetectMover1" Id="{1d387785-e892-0967-22d4-73d2923e67ae}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD DetectMover1 : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// calling enable group only sets a group reset flag that is handled in Cyclic Group Reset
+// this effectively sums up requests from all movers into a single sequence that will handle the reset
+internalM1DetectFlag := TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="EnableGroup" Id="{a75c02a5-1ca0-0df7-3f91-6bd402a249c4}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD EnableGroup : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// calling enable group only sets a group reset flag that is handled in Cyclic Group Reset
+// this effectively sums up requests from all movers into a single sequence that will handle the reset
+internalEnableGroupFlag := TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Environment" Id="{5e5f4ba6-ff8f-0396-2883-6b9b059dc7fd}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY Environment : I_TcIoXtsEnvironment]]></Declaration>
+      <Get Name="Get" Id="{67009401-6b19-0292-3a1b-93904af08df3}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Environment := internalEnvironment;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="EnvironmentIsReady" Id="{45272fae-93d1-0503-0b16-fd82b7738745}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY EnvironmentIsReady : BOOL]]></Declaration>
+      <Get Name="Get" Id="{c1e17dfb-61a0-0ba8-0903-93fde5311796}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// was fbXtsEnvironment.P_IsInitialized, but this can error if fbXtsEnironment.Init has not yet returned true
+// the state of the environment state machine is now used to confirm init has ben called
+EnvironmentIsReady := nEnvironmentState >= 3;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="GroupEnabled" Id="{dca70979-fee3-0f39-3528-000ca64a8f22}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY GroupEnabled : bool]]></Declaration>
+      <Get Name="Get" Id="{a4a17b6e-a2a8-0398-0745-96cf710d270e}">
+        <Declaration><![CDATA[
+VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[GroupEnabled := internalEnabled;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="GroupError" Id="{3ac97d16-5fe4-0a9a-3305-6d88385b660b}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY GroupError : bool]]></Declaration>
+      <Get Name="Get" Id="{faa6b223-287a-0e59-1c37-f312dffb5ec6}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// sum of various error bits throughout the mediator
+GroupError := fbGroupStatus.GroupErrorStop;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="InfoServer" Id="{816a507a-b5f1-077f-3d31-6cc9a0af8cb5}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY InfoServer : I_TcIoXtsInfoServer]]></Declaration>
+      <Get Name="Get" Id="{880f5fd5-5a90-005a-341d-63c8b7f4f011}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[InfoServer := internalInfoServer;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="InfoServerIsReady" Id="{4e305043-af78-0914-0db5-c677c55227ed}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY InfoServerIsReady : BOOL]]></Declaration>
+      <Get Name="Get" Id="{8b9f3051-e0e9-0ebe-0aa7-9041fdaa0bf8}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[InfoServerIsReady := internalInfoServer <> 0 AND_THEN internalInfoServer.P_IsInitialized;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Mover1DetectionComplete" Id="{b3d53d33-3d35-07f8-35ed-d0dbe454a97c}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY Mover1DetectionComplete : BOOL]]></Declaration>
+      <Get Name="Get" Id="{e92705b4-cdc3-0cc7-25dc-0275953572ce}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Mover1DetectionComplete := THIS^.EnvironmentIsReady AND_THEN (XPU.GetIsMoverIdDetectionValid() AND NOT XPU.GetIsMoverIdDetectionActive());
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="ResetStatistics" Id="{03455d1c-c490-0e78-3526-b69b05e0917b}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD ResetStatistics : BOOL
+VAR
+	i					: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// reset statistics at all postion triggers and stations
+FOR i := 0 TO GVL.NUM_POSITIONTRIGGERS-1 DO
+	PositionTriggerArray[i]^.ResetStatistics();
+END_FOR
+FOR i := 0 TO GVL.NUM_STATIONS-1 DO
+	StationArray[i]^.ResetStatistics();
+END_FOR
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="XPU" Id="{b9694a68-ee0f-0a17-2999-0aade43c6ce4}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY XPU : I_TcIoXtsProcessingUnit]]></Declaration>
+      <Get Name="Get" Id="{fb7fa487-baed-05fa-2f8e-e167e0e16d6f}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[XPU := internalXPU;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

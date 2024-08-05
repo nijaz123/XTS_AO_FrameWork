@@ -1,0 +1,487 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="MAIN" Id="{c992ed33-41fe-02c4-17ef-23123b9a5b23}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR	
+
+	// ========= System Control / FSM Variables =========
+	
+	MainCommands 		: MainCommands_typ; 		// command struct for cycling thru the state machine
+	MainState    		: MainStateMachine_enum;   	// enumeration for the Main state machine
+	System				: Mediator;					// System-level control object
+
+	// ========= Linked NC Variables & References =========
+	
+	Mover    			: ARRAY[1..GVL.NUM_MOVERS] OF Mover; 	// instantiation of Mover objects. Matches the number of movers on the system
+	
+	// ========= Objectives & Parameters =========
+
+	ParameterSet		: MotionParameters_typ;
+	
+	MoverList			: ARRAY[0..GVL.NUM_MOVERLISTS-1] OF MoverList;
+	PositionTrigger		: ARRAY[0..GVL.NUM_POSITIONTRIGGERS-1] OF PositionTrigger;
+	Station				: ARRAY[0..GVL.NUM_STATIONS-1] OF Station;
+	Track				: ARRAY[0..GVL.NUM_TRACKS] OF Track;
+	Zone				: ARRAY[0..GVL.NUM_ZONES-1] OF Zone;
+	
+    // ========= Helper, State, & Index Variables =========
+	
+    i                	: UINT; 	// index variable; gets reused in various FOR loops
+    n                	: UINT; 	// secondary index variable, for enabling movers
+	
+	// ========= Example Application Variables =========
+
+    lowVelocity    		: LREAL := 200;  	// mm/s
+    mediumVelocity 		: LREAL := 800;  	// mm/s
+    highVelocity   		: LREAL := 1200; 	// mm/s
+	
+	userStationsMonitor	: UserStationsMonitor;
+	
+	trigUP1				: R_TRIG;
+	trigDOWN1			: F_TRIG;
+	
+	loadTray_Busy			: 	BOOL;
+	firstRun				:	BOOL;
+	loadTray_Complete		:	BOOL;
+	loadArea1_Busy			:	BOOL;
+	loadArea1_Complete		: 	BOOL;
+	loadArea2_Busy			: 	BOOL;
+	loadArea2_Complete		: 	BOOL;
+	loadArea3_Busy			: 	BOOL;
+	loadArea3_Complete		:   BOOL;
+	loadArea4_Busy			: 	BOOL;
+	loadArea4_Complete		: 	BOOL;
+	unloadTray_Busy			:	BOOL;
+	unloadTray_Complete		:	BOOL;
+	zone0Stop				:	BOOL;
+	bOneShotConstantVel		:	BOOL;
+	iConstantSpeedVel		:	INT;
+	bOneShotMove			:	BOOL;
+	iStationLoop			:	INT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+CASE MainState OF
+	MainStateMachine_enum.MS_DISABLED: // ------------------------------------------
+	
+		// XTS is idle. Motive power is disabled.	
+		IF MainCommands.Enable THEN
+			MainCommands.Disable			:= FALSE;
+			MainCommands.Stop				:= FALSE;
+			MainState						:= MainStateMachine_enum.MS_INITIALIZING;
+		END_IF
+
+	MainStateMachine_enum.MS_INITIALIZING: // --------------------------------------
+	
+		Registering();			// Add all objectives & movers to the system-level Mediator object
+		Initializing();			// Set basic application parameters for the objects
+			
+		System.CompleteMoverList.EnableAll();
+		System.CompleteMoverList.ActivateAllTrack( Track[1] );
+		
+		IF System.CompleteMoverList.IsAllTrackReady AND System.CompleteMoverList.IsAllMoversReady THEN
+			MainState	:= MainStateMachine_enum.MS_ENABLED;
+		END_IF
+		
+		IF MainCommands.Disable THEN
+			MainCommands.Enable	:= FALSE;
+			System.CompleteMoverList.DisableAll();
+			MainState			:= MainStateMachine_enum.MS_DISABLING;
+		END_IF
+	
+	MainStateMachine_enum.MS_ENABLED:	// -------------------------------------------
+	
+		// Recovery logic
+		IF MainCommands.Start THEN
+			System.CompleteMoverList.SetAllVelocity(mediumVelocity).MoveAllToStation( Station[0] );
+			System.ResetStatistics();
+			MainState			:= MainStateMachine_enum.MS_RUN;
+		ELSIF MainCommands.Disable THEN
+			MainCommands.Enable	:= FALSE;
+			System.CompleteMoverList.HaltAll();
+			MainState			:= MainStateMachine_enum.MS_STOPPING;
+			
+		END_IF
+	
+	MainStateMachine_enum.MS_RUN: // -----------------------------------------------
+	
+		StationLogic();
+        IF System.GroupError THEN
+			// stop on group error user must go through disable/enable to recover
+			MainCommands.Start	:= FALSE;
+			MainState 			:= MainStateMachine_enum.MS_STOPPING;
+		ELSIF MainCommands.Stop THEN
+            MainCommands.Start 	:= FALSE;
+			System.CompleteMoverList.HaltAll();
+            MainState         	:= MainStateMachine_enum.MS_STOPPING;
+        ELSIF MainCommands.Disable THEN
+            MainCommands.Enable := FALSE;
+			System.CompleteMoverList.HaltAll();
+            MainState           := MainStateMachine_enum.MS_STOPPING;
+        END_IF
+		
+	MainStateMachine_enum.MS_STOPPING:
+	
+		IF System.CompleteMoverList.IsAllMoversHalted THEN
+			MainState			:= MainStateMachine_enum.MS_STOPPED;
+		END_IF
+		
+	MainStateMachine_enum.MS_STOPPED: // -------------------------------------------
+	
+	    IF MainCommands.Disable THEN
+            MainCommands.Enable 	:= FALSE;
+			MainCommands.Start		:= FALSE;
+			MainCommands.Stop		:= FALSE;
+			System.CompleteMoverList.DisableAll();
+            MainState           	:= MainStateMachine_enum.MS_DISABLING;
+        ELSIF MainCommands.Start THEN
+            MainCommands.Stop 		:= FALSE;
+            MainState         		:= MainStateMachine_enum.MS_ENABLED;
+        END_IF
+		
+	MainStateMachine_enum.MS_DISABLING: // -------------------------------------------
+	
+		IF System.CompleteMoverList.IsAllMoversDisabled THEN
+			MainState			:= MainStateMachine_enum.MS_DISABLED;
+		END_IF
+		
+	MainStateMachine_enum.MS_ERROR: // ---------------------------------------------
+	MainStateMachine_enum.MS_DEBUG: // ---------------------------------------------	
+	
+
+END_CASE
+
+System.Cyclic();
+]]></ST>
+    </Implementation>
+    <Action Name="Initializing" Id="{77eee1d6-568e-0448-2c64-a85af70fbf71}">
+      <Implementation>
+        <ST><![CDATA[
+
+	// Initialize station positions
+	Station[0].Position 		:= 1275;					//Load Tray Beginning
+	Station[1].Position 		:= 2820;					//Load Parts Section 1
+	Station[2].Position 		:= 3446;					//Load Parts Section 2
+	Station[3].Position 		:= 4060;					//Load Parts Section 3
+	Station[4].Position 		:= 4686;					//Load Parts Section 4
+	Station[5].Position 		:= 5500;					//Unload Tray End
+
+	PositionTrigger[0].Position := 1300;
+	PositionTrigger[1].Position := 5500;
+	PositionTrigger[2].Position := 3500;
+
+	Zone[0].StartPosition		:= 5600;
+	Zone[0].EndPosition   		:= 1275;
+
+	Zone[1].StartPosition 		:= 1275;
+	Zone[1].EndPosition   		:= 5600;
+
+	// testing zone used for recovery
+	Zone[2].StartPosition 		:= 1225;
+	Zone[2].EndPosition   		:= 1325;
+
+	Zone[3].StartPosition		:= 2750;
+	Zone[3].EndPosition   		:= 3750;
+	
+	System.CompleteMoverList.SetAllVelocity( 1E3 );
+	System.CompleteMoverList.SetAllAcceleration( 1E4 );
+	System.CompleteMoverList.SetAllDeceleration( 1E4 );
+	System.CompleteMoverList.SetAllJerk( 5E5 );
+	System.CompleteMoverList.SetAllGap( 200 );
+	System.CompleteMoverList.SetAllDirection( mcDirectionPositive );
+	]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="LightCurtainZone0Stop" Id="{25628856-69c1-06d6-114d-eb1efc511dde}">
+      <Implementation>
+        <ST><![CDATA[
+
+	trigUP1(CLK := zone0Stop);
+	trigDOWN1(CLK := zone0Stop);
+		
+	IF trigUP1.Q THEN
+		zone[0].CurrentMoverList.SetAllVelocity(0.1);
+	END_IF
+	
+	IF trigDOWN1.Q THEN
+		zone[0].CurrentMoverList.SetAllVelocity(lowVelocity);
+	END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="Registering" Id="{ef3ef836-2b88-0099-2899-1cd10004220b}">
+      <Implementation>
+        <ST><![CDATA[	
+
+		// Add all Movers to the Mediator
+		FOR i := 1 TO GVL.NUM_MOVERS DO
+			System.AddMover( Mover[i] );
+		END_FOR
+	
+		// Add all Mover Lists to the Mediator
+		FOR i := 0 TO GVL.NUM_MOVERLISTS - 1 DO
+			System.AddMoverList( MoverList[i] );
+		END_FOR
+		
+		// Add all PositionTriggers to the Mediator
+		FOR i := 0 TO GVL.NUM_POSITIONTRIGGERS - 1 DO
+			System.AddPositionTrigger( PositionTrigger[i] );
+		END_FOR
+		
+		// Add all Stations to the Mediator
+		FOR i := 0 TO GVL.NUM_STATIONS - 1 DO
+			System.AddStation( Station[i] );
+		END_FOR
+		
+		// Add all Tracks to the Mediator
+		// note track zero is a special case, so the loop is one larger than the rest of the initalization loops
+		FOR i := 0 TO GVL.NUM_TRACKS DO
+			Track[i].Id := UINT_TO_INT(i);
+			System.AddTrack( Track[i] );
+		END_FOR
+		
+		// Add all Zones to the Mediator
+		FOR i := 0 TO GVL.NUM_ZONES - 1 DO
+			System.AddZone( Zone[i] );
+		END_FOR]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="SpeedControl" Id="{f5b30aaf-76de-0f27-1de8-5eec8423446f}">
+      <Implementation>
+        <ST><![CDATA[//Changes the speeds of movers as they enter/leave loading area
+
+       // Position Trigger 0 Logic
+        IF PositionTrigger[0].MoverPassedPosition THEN
+            PositionTrigger[0].CurrentMover.SetVelocity(mediumVelocity);
+            PositionTrigger[0].MuteCurrent();
+        END_IF
+	
+		        // Position Trigger 1 Logic
+        IF PositionTrigger[1].MoverPassedPosition THEN
+            PositionTrigger[1].CurrentMover.SetVelocity(lowVelocity);
+            PositionTrigger[1].MuteCurrent();
+        END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="StationLogic" Id="{ad15b1d3-f9a4-013e-29dd-5430b02980cb}">
+      <Implementation>
+        <ST><![CDATA[		(*Mover routing logic should be written here to define the system's operating behavior.
+		Station implementations, Position Trigger logic, etc. In general, you can remove the example code
+		here down to the short line break that looks like this: // ============= *)
+
+	
+		//-----------------------------------------------------------LOADING TRAYS--------------------------------------------------
+
+	IF Station[0].MoverInPosition THEN
+    	loadTray_Busy := TRUE;
+		firstRun := TRUE;
+    	IF loadTray_Complete THEN
+        	Station[0].CurrentMover.MoveToStation( Station[1] );
+			loadTray_Complete := FALSE;  
+			loadTray_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	
+	//-----------------------------------------------------------LOADING Parts 1--------------------------------------------------
+	IF Station[1].MoverInPosition AND firstRun THEN
+    	loadArea1_Busy := TRUE;
+    	IF loadArea1_Complete THEN
+        	Station[1].CurrentMover.MoveToStation( Station[2] );
+			loadArea1_Complete := FALSE;
+			loadArea1_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	//-----------------------------------------------------------LOADING Parts 2--------------------------------------------------
+	IF Station[2].MoverInPosition AND firstRun  THEN
+    	loadArea2_Busy := TRUE;
+    	IF loadArea2_Complete THEN
+			//station3MoverID := Station[3].CurrentMover;
+        	Station[2].CurrentMover.MoveToStation( Station[3] );
+			loadArea2_Complete := FALSE;
+			loadArea2_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	//-----------------------------------------------------------LOADING Parts 3--------------------------------------------------
+	IF Station[3].MoverInPosition AND firstRun THEN
+    	loadArea3_Busy := TRUE;
+    	IF loadArea3_Complete THEN
+			//station4MoverID := Station[4].CurrentMover;
+        	Station[3].CurrentMover.MoveToStation( Station[4] );
+			loadArea3_Complete := FALSE;
+			loadArea3_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	//-----------------------------------------------------------LOADING Parts 4--------------------------------------------------
+	IF Station[4].MoverInPosition AND firstRun THEN
+    	loadArea4_Busy := TRUE;
+    	IF loadArea4_Complete THEN
+			//station5MoverID := Station[5].CurrentMover;
+        	Station[4].CurrentMover.MoveToStation( Station[5] );
+			loadArea4_Complete := FALSE;
+			loadArea4_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	
+	//-----------------------------------------------------------UNLOADING TRAY--------------------------------------------------
+	IF Station[5].MoverInPosition AND firstRun THEN
+    	unloadTray_Busy := TRUE;
+    	IF unloadTray_Complete THEN
+			//station6MoverID := Station[6].CurrentMover;
+        	Station[5].CurrentMover.MoveToStation( Station[0] );
+			unloadTray_Complete := FALSE;
+			unloadTray_Busy := FALSE;
+    	END_IF
+	END_IF
+	
+	
+	LightCurtainZone0Stop();
+	
+    SpeedControl();
+	
+	//Move at constant velocity
+	IF bOneShotConstantVel THEN
+		System.CompleteMoverList.MoveAllVelocity(iConstantSpeedVel);
+		bOneShotConstantVel := FALSE;
+	END_IF
+	
+	//	
+	IF bOneShotMove THEN
+		Mover[5].MoveToPosition( 2000 );
+		bOneShotMove := FALSE;
+	END_IF
+		
+		
+		(*
+	
+        // Station 0 Logic
+        IF Station[0].MoverInPosition THEN
+            StationTimer[0](IN := TRUE, PT := T#1000MS);
+            IF StationTimer[0].Q THEN
+                Station[0].CurrentMover.SetVelocity(mediumVelocity);
+                Station[0].CurrentMover.MoveToStation(Station[1]);
+            END_IF
+        ELSE
+            StationTimer[0](IN := FALSE);
+        END_IF
+		
+        // Station 1 Logic		
+        IF Station[1].MoverInPosition THEN
+            StationTimer[1](IN := TRUE, PT := T#250MS);
+            IF StationTimer[1].Q THEN
+                Station[1].CurrentMover.SetVelocity(mediumVelocity);
+                Station[1].CurrentMover.MoveToStation(Station[nextStation]);
+                nextStation := nextStation - 1;
+                IF nextStation = 1 THEN
+                    nextStation := 4;
+                END_IF
+            END_IF
+        ELSE
+            StationTimer[1](IN := FALSE);
+        END_IF
+		
+		// Group of Stations 2, 3, and 4 Logic
+        IF Station[2].MoverInPosition AND Station[3].MoverInPosition AND Station[4].MoverInPosition THEN
+            StationTimer[2](IN := TRUE, PT := T#750MS);
+            IF StationTimer[2].Q THEN
+				StationTimer[2](IN := FALSE);
+
+                Station[2].CurrentMover.MoveVelocity(500);
+                Station[3].CurrentMover.MoveVelocity(500);
+                Station[4].CurrentMover.MoveVelocity(500);
+            END_IF
+        END_IF
+		
+        // Position Trigger 0 Logic
+        IF PositionTrigger[0].MoverPassedPosition THEN
+            PositionTrigger[0].CurrentMover.SetVelocity(lowVelocity);
+            PositionTrigger[0].MuteCurrent();
+        END_IF
+		
+        // Position Trigger 1 Logic
+        IF PositionTrigger[1].MoverPassedPosition THEN
+			PositionTrigger[1].CurrentMover.SetAcceleration(5E2);
+            PositionTrigger[1].CurrentMover.SetVelocity(highVelocity);
+            PositionTrigger[1].MuteCurrent();
+        END_IF
+
+		// Position Trigger 2 Logic
+        IF PositionTrigger[2].MoverPassedPosition THEN
+			PositionTrigger[2].CurrentMover.SetAcceleration(1E4);
+            PositionTrigger[2].CurrentMover.SetVelocity(lowVelocity);
+            PositionTrigger[2].CurrentMover.MoveToStation(Station[0]);
+            PositionTrigger[2].MuteCurrent();
+        END_IF
+		
+		*)
+		
+		]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="StationMonitoring" Id="{86e33329-0b50-0dde-16d8-d2d360549561}">
+      <Implementation>
+        <ST><![CDATA[
+
+//Station Monitoring *************************
+
+
+FOR i := 0 TO GVL.NUM_STATIONS - 1 DO
+	IF Station[i].MoverInPosition THEN
+		userStationsMonitor.bmoverAtStation[i] := TRUE;
+		userStationsMonitor.nmoverAtStation[i] := Station[i].CurrentMover.AxisReference.NcToPlc.AxisId;
+	ELSE
+		userStationsMonitor.bmoverAtStation[i] := FALSE;
+		userStationsMonitor.nmoverAtStation[i] := 0;
+	END_IF
+END_FOR
+]]></ST>
+      </Implementation>
+    </Action>
+    <LineIds Name="MAIN">
+      <LineId Id="7" Count="0" />
+      <LineId Id="436" Count="33" />
+      <LineId Id="472" Count="53" />
+      <LineId Id="9" Count="0" />
+      <LineId Id="192" Count="1" />
+      <LineId Id="564" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.Initializing">
+      <LineId Id="42" Count="32" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.LightCurtainZone0Stop">
+      <LineId Id="2" Count="10" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.Registering">
+      <LineId Id="2" Count="0" />
+      <LineId Id="31" Count="0" />
+      <LineId Id="30" Count="0" />
+      <LineId Id="3" Count="19" />
+      <LineId Id="33" Count="0" />
+      <LineId Id="23" Count="0" />
+      <LineId Id="32" Count="0" />
+      <LineId Id="24" Count="5" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.SpeedControl">
+      <LineId Id="2" Count="11" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.StationLogic">
+      <LineId Id="63" Count="153" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="MAIN.StationMonitoring">
+      <LineId Id="2" Count="2" />
+      <LineId Id="15" Count="0" />
+      <LineId Id="14" Count="0" />
+      <LineId Id="5" Count="8" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

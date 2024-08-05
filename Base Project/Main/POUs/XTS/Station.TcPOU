@@ -1,0 +1,409 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="Station" Id="{92e40052-9fe7-43db-83b2-957f02760d97}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK Station EXTENDS Objective
+VAR
+
+    {attribute 'hide'}
+    internalPosition 				: LREAL;
+	internalTrackId 				: DINT := 1; 
+	internalGroupSize				: DINT := 1;	// used for calculating blocked statistics for multi-up stations
+	
+	internalStationOccupiedTimer	: TON;
+	internalStationEmptyTimer		: TON;
+	internalStationBlockedTimer		: TON;
+	internalBlocked					: BOOL;	// station is blocked from receiving movers because laving mover has not moved > mover gap
+	
+	// statistics reset tracking
+	internalStationOccupiedReset	: BOOL;
+	internalStationEmptyReset		: BOOL;
+	internalStationBlockedReset		: BOOL;
+END_VAR
+VAR_OUTPUT
+	
+	Statistics		: StationStats_typ;
+
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Methods" Id="{7e00525e-961b-408c-827a-9ab2f3b8b786}" />
+    <Folder Name="Properties" Id="{694a54d8-c3b3-4b97-92b5-1613c421a73a}" />
+    <Property Name="Blocked" Id="{b0572d8f-0a71-067b-1e92-23a98ea08d5c}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY Blocked : BOOL]]></Declaration>
+      <Get Name="Get" Id="{7c75b094-5d90-0904-1cdc-2e6d00f1e253}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Blocked := internalBlocked;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="CurrentMover" Id="{87e06a6e-6b85-49a8-89e2-baab16d00464}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'variable'}
+PROPERTY CurrentMover : REFERENCE TO Mover]]></Declaration>
+      <Get Name="Get" Id="{9082842d-f753-44ab-9e5c-973282377001}">
+        <Declaration><![CDATA[VAR
+
+    i          : ULINT;
+    difference : LREAL;
+
+	moverTrackId: INT;
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// default to unassigned
+CurrentMover REF= 0;
+
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    // In order to deal with the rollover, we need to evaluate distance between congruence classes
+    // e.g. On a 4m track, if the Station is at 0.34mm and the Mover is at 3999.8mm, then this is considered 'in position'	
+
+    IF internalTrackedMovers[i] <> 0 THEN
+		moverTrackId := internalTrackedMovers[i]^.CurrentTrack^.Id;
+		IF (moverTrackId = internalTrackId) THEN
+
+			difference := ABS(internalTrackedMovers[i]^.TrackInfo.TrackPosition - Position);
+
+			IF MIN(difference, GVL.TRACK_LENGTH - difference) < 1.0 AND NOT internalTrackedMovers[i]^.Busy THEN
+				CurrentMover                    REF= internalTrackedMovers[i]^;
+				CurrentMover.SourceInstancePath := THIS^.InstancePath;
+			END_IF
+		END_IF
+    END_IF
+
+END_FOR
+
+// If the Station has no CurrentMover, then return an imposter ErrorMover, whose method calls all trigger an error message
+IF __ISVALIDREF(CurrentMover) = FALSE THEN
+    ErrorMover.SourceInstancePath := THIS^.InstancePath;
+    CurrentMover                  REF= ErrorMover;
+END_IF]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="Cyclic" Id="{78bb8985-af5f-4003-bc25-a69ecfc6fbb4}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD Cyclic : BOOL
+VAR
+    i 					: UINT;
+	occupiedCount		: UINT;
+	emptyCount			: UINT;
+	lastMoverDist		: LREAL;
+	
+END_VAR
+VAR_INST
+	
+	internalRingBufferIDX			: UDINT;
+	internalLastMoverInPosition		: BOOL;
+	internalLastMover				: REFERENCE TO Mover;
+	alphaEMAOccupied				: LREAL;
+	alphaEMAEmpty					: LREAL;
+	alphaEMABlocked					: LREAL;
+	
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[FOR i := 1 TO GVL.NUM_MOVERS DO
+
+    // This mover is no longer destined for any station
+    IF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.CurrentMoveType <> MOVETYPE_STATION THEN
+        internalTrackedMovers[i] := 0;
+        // This mover is no longer destined for this specific station. Comparing instance path seems to be the best way to do this comparison?
+    ELSIF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.CurrentObjective <> InstancePath THEN
+        internalTrackedMovers[i] := 0;
+    END_IF
+
+END_FOR
+
+
+// Log occupied and empty times when movers arrive & depart
+IF THIS^.MoverInPosition = FALSE AND internalLastMoverInPosition THEN
+	// skip statistics on reset flag
+	IF (internalStationOccupiedReset) THEN
+		// reset flag
+		internalStationOccupiedReset := FALSE;
+		// set weight of first mover to 1
+		alphaEMAOccupied := 1.0;
+	ELSE
+		// Mover just departed
+		Statistics.OccupiedTimeHistory[internalRingBufferIDX]	:= internalStationOccupiedTimer.ET;
+		Statistics.AverageTimeOccupied		:= LREAL_TO_TIME(( alphaEMAOccupied * TIME_TO_LREAL(internalStationOccupiedTimer.ET) ) + (( 1 - alphaEMAOccupied ) * TIME_TO_LREAL(Statistics.AverageTimeOccupied) )); 
+		internalRingBufferIDX				:= internalRingBufferIDX + 1;
+		internalBlocked						:= TRUE;
+		// reset alphaema to global value for subsequent movers
+		alphaEMAOccupied := GVL.ALPHA_EMA;
+	END_IF
+ELSIF THIS^.MoverInPosition AND internalLastMoverInPosition = FALSE THEN
+	// skip statistics on reset flag
+	IF (InternalStationEmptyReset) THEN
+		// reset flag
+		InternalStationEmptyReset := FALSE;
+		// set weight of first mover to 1
+		alphaEMAEmpty := 1.0;
+	ELSE
+		// Mover just arrived
+		Statistics.ProcessedMoverCount		:= Statistics.ProcessedMoverCount + 1;
+		Statistics.EmptyTimeHistory[internalRingBufferIDX]	:= internalStationEmptyTimer.ET;
+		Statistics.AverageTimeEmpty			:= LREAL_TO_TIME(( alphaEMAEmpty * TIME_TO_LREAL(internalStationEmptyTimer.ET) ) + (( 1 - alphaEMAEmpty ) * TIME_TO_LREAL(Statistics.AverageTimeEmpty) ));
+		// reset alphaema to global value for subsequent movers
+		alphaEMAEmpty := GVL.ALPHA_EMA;
+	END_IF
+END_IF
+internalLastMoverInPosition		:= THIS^.MoverInPosition;
+IF (THIS^.MoverInPosition) THEN
+	internalLastMover				REF= THIS^.CurrentMover;
+END_IF
+
+// calculate time blocked
+// the station can not receive a new mover until the previous mover has moved > the mover gap (or some multiple thereof for multi-up stations)
+IF internalBlocked THEN
+	// run blocked timer
+	internalStationBlockedTimer(IN := internalBlocked, PT := T#40D, ET => Statistics.TimeBlocked);
+	// calculate the previous mover's distance traveled and compare to gap*station group (minimum distance required to receive next mover)
+	lastMoverDist :=  ABS(Position - internalLastMover.TrackInfo.TrackPosition);
+	IF MIN(lastMoverDist, GVL.TRACK_LENGTH - lastMoverDist) >= internalLastMover.MotionParameters.Gap * GroupSize THEN
+		// use 1.0 as alphaema on reset
+		IF (internalStationBlockedReset) THEN
+			alphaEMABlocked := 1.0;
+			internalStationBlockedReset := FALSE;
+		END_IF
+		// reset blocked flag
+		internalBlocked := FALSE;
+		// calculate and store statistics
+		Statistics.BlockedTimeHistory[internalRingBufferIDX]	:= internalStationBlockedTimer.ET;
+		Statistics.AverageTimeBlocked			:= LREAL_TO_TIME(( alphaEMABlocked * TIME_TO_LREAL(internalStationBlockedTimer.ET) ) + (( 1 - alphaEMABlocked ) * TIME_TO_LREAL(Statistics.AverageTimeBlocked) ));
+		// reset timer
+		internalStationBlockedTimer(IN := FALSE);
+		// use global alphaema for subsequent movers
+		alphaEMABlocked := GVL.ALPHA_EMA;
+	END_IF
+END_IF
+
+// Reset ringbuffer index at the end of the array
+IF internalRingBufferIDX = ( SIZEOF(Statistics.OccupiedTimeHistory) / SIZEOF(Statistics.OccupiedTimeHistory[0])) THEN
+	internalRingBufferIDX		:= 0;
+END_IF
+
+// Run occupied & empty timers
+// except when in reset condition and waiting for the first mover to hit this station
+IF THIS^.MoverInPosition THEN
+	internalStationOccupiedTimer( IN := NOT internalStationOccupiedReset, PT := T#40D, ET => Statistics.TimeOccupied );
+	internalStationEmptyTimer( IN := FALSE );
+ELSE
+	internalStationEmptyTimer( IN := NOT InternalStationEmptyReset, PT := T#40D, ET => Statistics.TimeEmpty );
+	internalStationOccupiedTimer( IN := FALSE );
+END_IF
+
+Statistics.AverageTimeBetweenMovers		:= Statistics.AverageTimeOccupied + Statistics.AverageTimeEmpty;
+// protect div0
+IF Statistics.AverageTimeBetweenMovers <> t#0s THEN
+	Statistics.AverageUtilizationFactor		:= TIME_TO_LREAL(Statistics.AverageTimeOccupied) / TIME_TO_LREAL(Statistics.AverageTimeBetweenMovers);
+	Statistics.AverageMoversPerMinute		:= 60000 / TIME_TO_LREAL(Statistics.AverageTimeBetweenMovers);
+END_IF;
+IF Statistics.AverageTimeEmpty <> T#0S THEN
+	Statistics.ThrottledThreshold := TIME_TO_LREAL(Statistics.AverageTimeBlocked) / TIME_TO_LREAL(Statistics.AverageTimeEmpty);
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="GroupSize" Id="{184a153e-6a7b-05e2-13d5-315d1216dac9}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY GroupSize : DINT]]></Declaration>
+      <Get Name="Get" Id="{466c6c03-9042-0e4c-3339-07ffcef23f93}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[GroupSize := internalGroupSize;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{8042331a-a33b-0711-0b7b-f0bd83dbe101}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalGroupSize := GroupSize;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Property Name="MoverInPosition" Id="{b2f2f406-c577-4151-a939-55cf737be01a}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'variable'}
+PROPERTY MoverInPosition : BOOL]]></Declaration>
+      <Get Name="Get" Id="{d8927bbf-05d2-4e0e-b060-cc126ea5d2f6}">
+        <Declaration><![CDATA[VAR
+
+    i          : ULINT;
+    difference : LREAL;
+	moverTrackId: INT;
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// default to false
+MoverInPosition := FALSE;
+
+FOR i := 1 TO SIZEOF(internalTrackedMovers) / SIZEOF(internalTrackedMovers[1]) DO
+
+    // In order to deal with the rollover, we need to evaluate distance between congruence classes
+    // e.g. On a 4m track, if the Station is at 0.34 mm and the Mover is at 3999.8mm, then this is considered 'in position' 
+
+    // todo: make in-position tolerance adjustable. add condition that mover is stopped?
+    IF internalTrackedMovers[i] <> 0  AND_THEN internalTrackedMovers[i]^.CurrentTrack <> 0 THEN
+		moverTrackId := internalTrackedMovers[i]^.CurrentTrack^.Id;
+		IF (moverTrackId = internalTrackId) THEN
+			difference := ABS(Position - internalTrackedMovers[i]^.TrackInfo.TrackPosition);
+
+			IF MIN(difference, GVL.TRACK_LENGTH - difference) < 1.0 AND NOT internalTrackedMovers[i]^.Busy THEN
+				MoverInPosition := TRUE;
+			END_IF
+		END_IF;
+    END_IF;
+
+END_FOR]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Position" Id="{69b558ba-7b9e-447a-8ade-0a9fb9283902}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'call'}
+PROPERTY Position : LREAL]]></Declaration>
+      <Get Name="Get" Id="{529c44e3-04f5-411e-9aff-c4e5331b84af}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Position := internalPosition;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{a000f0ea-48cb-4fcc-859b-c3c20afad593}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalPosition := Position;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Method Name="ResetStatistics" Id="{da55533f-edf5-0091-1a7a-0d75e84e5952}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD ResetStatistics : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Statistics.TimeOccupied				:= T#0S;
+Statistics.TimeEmpty				:= T#0S;
+Statistics.TimeBlocked				:= T#0S;
+
+memset(ADR(Statistics.OccupiedTimeHistory),0,SIZEOF(Statistics.OccupiedTimeHistory));
+memset(ADR(Statistics.EmptyTimeHistory),0,SIZEOF(Statistics.EmptyTimeHistory));
+memset(ADR(Statistics.BlockedTimeHistory),0,SIZEOF(Statistics.BlockedTimeHistory));
+
+Statistics.AverageTimeOccupied		:= T#0S;
+Statistics.AverageTimeEmpty			:= T#0S;
+Statistics.AverageTimeBlocked		:= T#0S;
+Statistics.AverageTimeBetweenMovers	:= T#0S;
+Statistics.AverageUtilizationFactor	:= 0;
+Statistics.AverageMoversPerMinute	:= 0;
+Statistics.ProcessedMoverCount		:= 0;
+Statistics.ThrottledThreshold		:= 0;
+
+internalStationOccupiedReset		:= TRUE;
+internalStationEmptyReset			:= TRUE;
+internalStationBlockedReset			:= TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="TrackId" Id="{dd27eb4c-c068-0d87-1f18-811d55fc3099}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY TrackId : DINT]]></Declaration>
+      <Get Name="Get" Id="{be7a013c-37ba-0a27-340c-88598ee84d38}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TrackId := internalTrackId;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{bd28dde0-1e47-0849-0f5f-d2aee5da86fa}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalTrackId := TrackId;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <LineIds Name="Station">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.Blocked.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.CurrentMover.Get">
+      <LineId Id="3" Count="8" />
+      <LineId Id="46" Count="0" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="39" Count="6" />
+      <LineId Id="16" Count="3" />
+      <LineId Id="33" Count="0" />
+      <LineId Id="20" Count="4" />
+    </LineIds>
+    <LineIds Name="Station.Cyclic">
+      <LineId Id="87" Count="14" />
+      <LineId Id="191" Count="2" />
+      <LineId Id="195" Count="0" />
+      <LineId Id="197" Count="2" />
+      <LineId Id="102" Count="4" />
+      <LineId Id="201" Count="1" />
+      <LineId Id="200" Count="0" />
+      <LineId Id="107" Count="0" />
+      <LineId Id="203" Count="2" />
+      <LineId Id="207" Count="3" />
+      <LineId Id="108" Count="3" />
+      <LineId Id="212" Count="0" />
+      <LineId Id="214" Count="0" />
+      <LineId Id="213" Count="0" />
+      <LineId Id="112" Count="13" />
+      <LineId Id="218" Count="2" />
+      <LineId Id="239" Count="0" />
+      <LineId Id="221" Count="0" />
+      <LineId Id="126" Count="6" />
+      <LineId Id="216" Count="1" />
+      <LineId Id="133" Count="8" />
+      <LineId Id="173" Count="0" />
+      <LineId Id="142" Count="15" />
+      <LineId Id="17" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.GroupSize.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.GroupSize.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.MoverInPosition.Get">
+      <LineId Id="3" Count="9" />
+      <LineId Id="33" Count="0" />
+      <LineId Id="27" Count="4" />
+      <LineId Id="13" Count="1" />
+      <LineId Id="25" Count="1" />
+      <LineId Id="17" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.Position.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.Position.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.ResetStatistics">
+      <LineId Id="8" Count="3" />
+      <LineId Id="27" Count="0" />
+      <LineId Id="12" Count="2" />
+      <LineId Id="28" Count="0" />
+      <LineId Id="15" Count="2" />
+      <LineId Id="30" Count="0" />
+      <LineId Id="18" Count="5" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="34" Count="0" />
+      <LineId Id="38" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.TrackId.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="Station.TrackId.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,378 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="PositionTrigger" Id="{e261b23c-fca2-43e5-b385-fb66bc9fcaf5}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK PositionTrigger EXTENDS Objective
+
+VAR
+    internalPosition    	 : LREAL;
+    internalTriggerDirection 	 : Tc2_MC2.MC_Direction;
+    internalMoverPassedPosition : BOOL;
+    internalCurrentMover     	 : POINTER TO Mover;
+	internalLastMoverPassedPosition		: BOOL;
+	internalTrackId				: DINT := 1;
+    moverLastPos              	: ARRAY[1..GVL.NUM_MOVERS] OF LREAL; // Positions of tracked movers from last cycle
+	moverInitialized			: ARRAY [1..GVL.NUM_MOVERS] OF BOOL; // first scan-like flag to prevent erronious triggers on first scan
+	
+	lastCallMuteCurrent: LREAL;
+	internalInterarrivalTimer			: TON;
+	internalStatisticsReset				: BOOL;
+END_VAR
+VAR_OUTPUT
+	Statistics							: PositionTriggerStats_typ;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Methods" Id="{9cc02e33-a729-42f1-92ba-3e4f0abe5943}" />
+    <Folder Name="Properties" Id="{44d24ab5-188a-4889-a21d-6766b6bafebd}" />
+    <Property Name="CurrentMover" Id="{c163c3b6-4ffd-4a8a-9cd5-4f7ea2c9ac63}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'call'}
+PROPERTY CurrentMover : REFERENCE TO Mover]]></Declaration>
+      <Get Name="Get" Id="{1ef15534-d318-4776-b5e9-9e8c1d9782f0}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[
+
+CurrentMover						REF= internalCurrentMover^;
+CurrentMover.SourceInstancePath		:= THIS^.InstancePath;
+
+// If the Trigger has no CurrentMover, then return an imposter ErrorMover,
+// whose method calls all trigger an error message
+IF __ISVALIDREF(CurrentMover) = FALSE THEN
+    ErrorMover.SourceInstancePath := THIS^.InstancePath;
+    CurrentMover                  REF= ErrorMover;
+END_IF]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="Cyclic" Id="{4af842ce-a8b8-45a8-81bc-ac521b0a027a}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD Cyclic : BOOL
+VAR_INPUT
+END_VAR
+VAR
+	
+    i                       	: UDINT;	
+	currentIsRegistered			: BOOL;
+	moverTrackId				: INT;
+	positionDifference			: LREAL;
+	modTrackPosition			: LREAL;
+	rolloverOccured				: BOOL;
+	
+END_VAR
+VAR_INST
+
+	velocityCount				: UDINT;
+	velocitySum					: LREAL;
+	internalRingBufferIDX		: UDINT;
+	alphaEMA					: LREAL;
+
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[currentIsRegistered		:= FALSE;
+
+FOR i := 1 TO GVL.NUM_MOVERS DO
+    IF internalTrackedMovers[i] <> 0 AND_THEN internalTrackedMovers[i]^.IsTrackReady AND internalTrackedMovers[i]^.CurrentTrack <> 0 THEN
+		moverTrackId := internalTrackedMovers[i]^.CurrentTrack^.Id;
+		IF (moverTrackId = internalTrackId) THEN
+			
+			// last position is invalid on first scan, set it to the current position to avoid a false trigger on the first scan
+			IF NOT moverInitialized[i] THEN
+				moverInitialized[i] := TRUE;
+				moverLastPos[i] := modTrackPosition;
+			END_IF
+		
+			// Determine if a position rollover occured in the last cycle
+			modTrackPosition := MODABS( internalTrackedMovers[i]^.TrackInfo.TrackPosition, GVL.TRACK_LENGTH);
+			positionDifference := moverLastPos[i] - modTrackPosition;
+			rolloverOccured := (positionDifference) > (GVL.TRACK_LENGTH - 0.1);
+			// and if so, modify the stored last position values to be nonmodulo to compensate
+			IF rolloverOccured AND positionDifference > 0 THEN
+				moverLastPos[i]		:= moverLastPos[i] - GVL.TRACK_LENGTH;
+			ELSIF rolloverOccured AND positionDifference < 0 THEN
+				moverLastPos[i]		:= moverLastPos[i] + GVL.TRACK_LENGTH;
+			END_IF
+		
+			// Look for movers passing over the threshold this cycle and assign it to the
+			// InternalCurrentMover output, which should latch until it is cleared
+			IF TriggerDirection = MC_Positive_Direction AND moverLastPos[i] < internalPosition AND
+				modTrackPosition >= internalPosition THEN
+				
+				// Position trigger event detected in the positive direction
+				internalMoverPassedPosition		:= TRUE;
+				internalCurrentMover			:= internalTrackedMovers[i];
+				
+			ELSIF TriggerDirection = MC_Negative_Direction AND moverLastPos[i] > internalPosition AND
+				modTrackPosition <= internalPosition THEN
+				
+				// Position trigger event detecte in the negative direction
+				internalMoverPassedPosition		:= TRUE;
+				internalCurrentMover			:= internalTrackedMovers[i];
+				
+			END_IF
+			
+			
+			
+			// Ensure that the CurrentMover is still registered with the PositionTrigger
+			IF internalCurrentMover <> 0 AND internalTrackedMovers[i] = internalCurrentMover THEN
+				currentIsRegistered		:= TRUE;
+			END_IF
+	
+			moverLastPos[i] 		:= modTrackPosition;
+		END_IF
+	END_IF
+
+END_FOR
+
+
+// If the CurrentMover isn't found in the registration list, then it has been removed, and should no longer be Current
+IF currentIsRegistered = FALSE THEN
+	internalMoverPassedPosition		:= FALSE;
+	internalCurrentMover			:= 0;
+END_IF
+
+// Calculate stats
+IF THIS^.MoverPassedPosition AND internalLastMoverPassedPosition = FALSE THEN
+	// skip statistics on reset flag
+	IF (internalStatisticsReset) THEN
+		// reset flag
+		internalStatisticsReset := FALSE;
+		// set weight of first mover to 1
+		alphaEMA := 1.0;
+	ELSE
+		Statistics.ProcessedMoverCount									:= Statistics.ProcessedMoverCount + 1;
+		Statistics.InterarrivalTimeHistory[internalRingBufferIDX]		:= internalInterarrivalTimer.ET;
+		Statistics.MoverVelocityHistory[internalRingBufferIDX]			:= THIS^.CurrentMover.AxisReference.NcToPlc.ActVelo;
+		internalRingBufferIDX											:= internalRingBufferIDX + 1;
+		Statistics.LatestMoverVelocity									:= THIS^.CurrentMover.AxisReference.NcToPlc.ActVelo;
+		Statistics.AverageInterarrivalTime	:= LREAL_TO_TIME(( alphaEMA * TIME_TO_LREAL(internalInterarrivalTimer.ET )) + (( 1 - alphaEMA) * TIME_TO_LREAL( Statistics.AverageInterarrivalTime )));
+		internalInterarrivalTimer( IN := FALSE );
+		// reset alphaema to global value for subsequent movers
+		alphaEMA := GVL.ALPHA_EMA;
+	END_IF;
+END_IF
+internalLastMoverPassedPosition		:= THIS^.MoverPassedPosition;
+internalInterarrivalTimer( IN := NOT internalStatisticsReset, PT := T#40D, ET => Statistics.InterarrivalTime );
+
+IF internalRingBufferIDX = ( SIZEOF( Statistics.InterarrivalTimeHistory ) / SIZEOF( Statistics.InterarrivalTimeHistory[0] )) THEN
+	internalRingBufferIDX		:= 0;
+END_IF
+
+IF Statistics.AverageInterarrivalTime <> T#0S THEN
+	Statistics.AverageMoversPerMinute		:= 60000 / TIME_TO_LREAL( Statistics.AverageInterarrivalTime );
+END_IF
+
+velocitySum		:= 0;
+velocityCount	:= 0;
+
+FOR i := 0 TO SIZEOF( Statistics.MoverVelocityHistory ) / SIZEOF( Statistics.MoverVelocityHistory[0] ) DO
+	IF Statistics.MoverVelocityHistory[i] <> 0 THEN
+		velocityCount		:= velocityCount + 1;
+		velocitySum			:= velocitySum + Statistics.MoverVelocityHistory[i];
+	END_IF
+END_FOR
+IF velocityCount <> 0 THEN // protect div0
+	Statistics.AverageMoverVelocity		:= velocitySum / velocityCount;
+END_IF 
+	
+
+
+
+
+
+
+
+
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="MoverPassedPosition" Id="{a772009e-789b-4c33-900b-53697bdea9b4}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'call'}
+PROPERTY MoverPassedPosition : BOOL]]></Declaration>
+      <Get Name="Get" Id="{609e4250-8b2f-45f6-8a69-75a39f309494}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[MoverPassedPosition := internalMoverPassedPosition;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="MuteCurrent" Id="{39742f47-b11e-053a-08ba-d3a07a9ed4a0}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD MuteCurrent : BOOL
+VAR
+	newCallTime			: LREAL;
+END_VAR
+VAR_INST
+	MsgCreate			: FB_TcMessage;	
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// message for debugging as this function is typically called when acting on a position trigger
+newCallTime		:= ULINT_TO_LREAL(F_GetSystemTime())/1E7;
+IF ( newCallTime - lastCallMuteCurrent ) > 1 THEN
+	MsgCreate.CreateEx( TC_EVENTS.XtsBaseEventClass.PositionTriggerMuteCurrent,0 );
+	MsgCreate.ipArguments.Clear().AddString(THIS^.InstancePath).AddUDint(internalCurrentMover^.IdentInGroup);
+	MsgCreate.Send(0);
+END_IF
+lastCallMuteCurrent := newCallTime;
+
+internalMoverPassedPosition		:= FALSE;
+internalCurrentMover			:= 0;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Position" Id="{25b3d396-dcf1-4a9a-afb5-cc0f915e5828}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'call'}
+PROPERTY Position : LREAL]]></Declaration>
+      <Get Name="Get" Id="{36b155cf-1e07-48aa-8c28-02916d4da719}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Position := internalPosition;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{7efc021c-c389-4be4-95cc-10506809ec26}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[// todo maybe do a limits check here?
+internalPosition := Position;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Method Name="ResetStatistics" Id="{485f63f0-075c-0e7c-1416-0b610b27218f}" FolderPath="Methods\">
+      <Declaration><![CDATA[METHOD ResetStatistics : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Statistics.AverageInterarrivalTime		:= T#0S;
+Statistics.AverageMoversPerMinute		:= 0;
+Statistics.AverageMoverVelocity			:= 0;
+Statistics.InterarrivalTime				:= T#0S;
+
+memset(ADR(Statistics.InterarrivalTimeHistory),0,SIZEOF(Statistics.InterarrivalTimeHistory));
+memset(ADR(Statistics.MoverVelocityHistory),0,SIZEOF(Statistics.MoverVelocityHistory));
+
+Statistics.LatestMoverVelocity			:= 0;
+Statistics.ProcessedMoverCount			:= 0;
+
+internalStatisticsReset					:= TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="TrackId" Id="{dbfe845b-02ea-002a-11b5-4efaf37a2e66}" FolderPath="Properties\">
+      <Declaration><![CDATA[PROPERTY TrackId : DINT]]></Declaration>
+      <Get Name="Get" Id="{36306272-b6fe-0043-1e2d-da060775dff6}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TrackId := internalTrackId;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{43412e6e-388b-0c48-14bf-abf9f8d26c08}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalTrackId := TrackId;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Property Name="TriggerDirection" Id="{13bb661c-6cea-4df5-a26e-19ba5cdbbe66}" FolderPath="Properties\">
+      <Declaration><![CDATA[{attribute 'monitoring' := 'call'}
+PROPERTY TriggerDirection : Tc2_MC2.MC_Direction]]></Declaration>
+      <Get Name="Get" Id="{8bbc3265-3408-4a78-8182-d12cc43c4309}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TriggerDirection := internalTriggerDirection;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{3c003fcd-3a77-441b-81df-74705c2d0fc5}">
+        <Declaration><![CDATA[VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[internalTriggerDirection := TriggerDirection;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <LineIds Name="PositionTrigger">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.CurrentMover.Get">
+      <LineId Id="3" Count="9" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.Cyclic">
+      <LineId Id="86" Count="3" />
+      <LineId Id="160" Count="0" />
+      <LineId Id="90" Count="0" />
+      <LineId Id="197" Count="0" />
+      <LineId Id="199" Count="3" />
+      <LineId Id="198" Count="0" />
+      <LineId Id="92" Count="1" />
+      <LineId Id="185" Count="0" />
+      <LineId Id="172" Count="0" />
+      <LineId Id="170" Count="0" />
+      <LineId Id="94" Count="5" />
+      <LineId Id="104" Count="33" />
+      <LineId Id="139" Count="6" />
+      <LineId Id="242" Count="5" />
+      <LineId Id="241" Count="0" />
+      <LineId Id="146" Count="5" />
+      <LineId Id="2" Count="0" />
+      <LineId Id="250" Count="0" />
+      <LineId Id="249" Count="0" />
+      <LineId Id="248" Count="0" />
+      <LineId Id="74" Count="11" />
+      <LineId Id="203" Count="4" />
+      <LineId Id="91" Count="0" />
+      <LineId Id="208" Count="7" />
+      <LineId Id="100" Count="3" />
+      <LineId Id="216" Count="4" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.MoverPassedPosition.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.MuteCurrent">
+      <LineId Id="14" Count="6" />
+      <LineId Id="3" Count="2" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.Position.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.Position.Set">
+      <LineId Id="6" Count="0" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.ResetStatistics">
+      <LineId Id="6" Count="1" />
+      <LineId Id="5" Count="0" />
+      <LineId Id="8" Count="2" />
+      <LineId Id="12" Count="0" />
+      <LineId Id="11" Count="0" />
+      <LineId Id="13" Count="0" />
+      <LineId Id="15" Count="0" />
+      <LineId Id="14" Count="0" />
+      <LineId Id="16" Count="0" />
+      <LineId Id="21" Count="0" />
+      <LineId Id="20" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.TrackId.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.TrackId.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.TriggerDirection.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="PositionTrigger.TriggerDirection.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

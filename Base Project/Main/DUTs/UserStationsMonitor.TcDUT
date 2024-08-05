@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <DUT Name="UserStationsMonitor" Id="{93516866-f72c-0c0c-2bfc-6f93e05452f7}">
+    <Declaration><![CDATA[TYPE UserStationsMonitor :
+STRUCT
+	
+bmoverAtStation		: ARRAY[0..GVL.NUM_STATIONS] OF BOOL;
+nmoverAtStation		: ARRAY[0..GVL.NUM_STATIONS] OF UDINT;
+
+
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>
